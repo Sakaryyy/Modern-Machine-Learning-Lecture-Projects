@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+
 @dataclass(frozen=True)
 class Paths:
     """Container for project paths.
@@ -61,7 +62,7 @@ class Splits:
     train_end : str
         ISO date marking the end of training window (inclusive).
     validation_end : str
-        ISO date marking the end of holdout window (inclusive).
+        ISO date marking the end of validation window (inclusive).
     """
     train_end: str = "2012-06-30"
     validation_end: str = "2012-10-31"
@@ -96,9 +97,9 @@ class FeatureConfig:
         nonlinear terms like atemp^2, atemp^3, and so on, depending on the builder.
     """
     # Hour encodings
-    add_hour_cyclical: bool = False
-    hour_fourier_harmonics: int = 1  # if >1, uses hour_fourier_step with this many harmonics
-    add_hour_onehot: bool = False
+    add_hour_cyclical: bool = True
+    hour_fourier_harmonics: int = 2  # if >1, uses hour_fourier_step with this many harmonics
+    add_hour_onehot: bool = True
     onehot_drop_first: bool = True
 
     # Interactions
@@ -117,7 +118,7 @@ class FeatureConfig:
     use_holiday: bool = False
     use_weathersit_onehot: bool = True
     weathersit_drop_first: bool = True
-    poly_temp_degree: int = 1
+    poly_temp_degree: int = 2
 
 @dataclass(frozen=True)
 class ExperimentConfig:
@@ -165,10 +166,10 @@ class ExperimentConfig:
             eda_figures_dir=root / "outputs" / "figures" / "eda",
             model_figures_dir=root / "outputs" / "figures" / "model",
             regression_figures_dir=root / "outputs" / "figures" / "model" / "regression",
-            classification_figures_dir=root / "outputs" / "figures" / "classification",
+            classification_figures_dir=root / "outputs" / "figures" / "model" / "classification",
             eda_tables_dir=root / "outputs" / "tables" / "eda",
             model_tables_dir=root / "outputs" / "tables" / "model",
-            regression_tables_dir=root / "outputs" / "tables" / "regression",
-            classification_tables_dir=root / "outputs" / "tables" / "classification",
+            regression_tables_dir=root / "outputs" / "tables" / "model" / "regression",
+            classification_tables_dir=root / "outputs" / "tables" / "model" / "classification",
         )
         return ExperimentConfig(paths=paths)

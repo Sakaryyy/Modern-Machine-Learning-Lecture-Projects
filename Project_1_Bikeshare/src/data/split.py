@@ -18,9 +18,9 @@ class DataSplits:
         Inclusive right endpoint of the training set. The training slice is
         all rows with timestamp <= train_end.
     validation_end : str or pandas.Timestamp
-        Inclusive right endpoint of the holdout (validation) set. The holdout
-        slice is all rows with train_end < timestamp <= holdout_end. The test
-        slice is all rows with timestamp > holdout_end.
+        Inclusive right endpoint of the validation set. The validation
+        slice is all rows with train_end < timestamp <= validation_end. The test
+        slice is all rows with timestamp > validation_end.
     """
     train_end: pd.Timestamp | str
     validation_end: pd.Timestamp | str
@@ -99,25 +99,25 @@ def data_split(
 
     # Boolean masks implement the interval logic exactly.
     train_mask = idx <= train_end
-    holdout_mask = (idx > train_end) & (idx <= validate_end)
+    validation_mask = (idx > train_end) & (idx <= validate_end)
     test_mask = idx > validate_end
 
     train = df.loc[train_mask]
-    holdout = df.loc[holdout_mask]
+    validation = df.loc[validation_mask]
     test = df.loc[test_mask]
 
     if validate_nonempty:
         n_tr = len(train)
-        n_ho = len(holdout)
+        n_ho = len(validation)
         n_te = len(test)
         if n_tr == 0 or n_ho == 0 or n_te == 0:
             raise ValueError(
                 "One or more splits are empty after applying the boundaries. "
-                f"Sizes are train={n_tr}, holdout={n_ho}, test={n_te}. "
+                f"Sizes are train={n_tr}, validation={n_ho}, test={n_te}. "
                 "Adjust train_end and validate_end to produce non-empty splits."
             )
 
-    return train, holdout, test
+    return train, validation, test
 
 
 def _coerce_timestamp(ts_like: pd.Timestamp | str, idx: pd.DatetimeIndex) -> pd.Timestamp:

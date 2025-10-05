@@ -515,7 +515,7 @@ def run_classification(
                     "grad_norm": rec.grad_norm,
                     "accuracy": rec.accuracy,
                     "log_loss": rec.log_loss,
-                    "phase": "train_holdout",
+                    "phase": "train_validation",
                 }
                 for rec in fit_final.history
             ]
@@ -634,9 +634,9 @@ def run_classification(
     )
     logger.info("Saved classification tables to %s", summary_path)
 
-    fig_conf_holdout = cfg.paths.classification_figures_dir / "confusion_matrix_validation.png"
+    fig_conf_validation = cfg.paths.classification_figures_dir / "confusion_matrix_validation.png"
     viz_classif.plot_confusion_matrix(
-        conf_mat_validation, fig_conf_holdout, title="Confusion matrix (validation)"
+        conf_mat_validation, fig_conf_validation, title="Confusion matrix (validation)"
     )
 
     fig_conf_test = cfg.paths.classification_figures_dir / "confusion_matrix_test.png"
@@ -661,7 +661,7 @@ def run_classification(
 
     logger.info(
         "Classification figures saved: %s, %s, %s, %s, %s%s",
-        fig_conf_holdout,
+        fig_conf_validation,
         fig_conf_test,
         fig_trace,
         fig_per_hour,

@@ -3,21 +3,15 @@ from __future__ import annotations
 import logging
 from typing import List, Sequence, Tuple, Literal
 
-import pandas as pd
-
 import jax
 import jax.numpy as jnp
+import pandas as pd
 
 from src.config.experiment_config import ExperimentConfig, FeatureConfig
-from src.utils.io import save_table_xlsx
-from src.utils.preprocess import to_device_array
-from src.utils.targets import forward_transform, inverse_transform, smearing_factor
-from src.utils.preprocess import standardize_design, can_select_group
-from src.utils.helpers import log_jax_runtime_info
-from src.data.fetch import fetch_uci_bike
 from src.data.clean import clean_bike_df, save_processed
+from src.data.fetch import fetch_uci_bike
 from src.data.split import DataSplits, data_split
-from src.visualization import regression_plotting as viz_train
+from src.evaluation.ablation_regression import forward_ablation
 from src.features.pipeline import (
     FeaturePipeline,
     interaction_onehot_numeric_step,
@@ -31,10 +25,15 @@ from src.features.pipeline import (
     season_onehot_step,
     weathersit_onehot_step,
 )
-from src.models.linear_ridge_jax import RidgeClosedForm
-from src.models.baselines import HourOfDayBaseline, MeanBaseline
 from src.metrics.regression import mae, r2, rmse
-from src.evaluation.ablation_regression import forward_ablation
+from src.models.baselines import HourOfDayBaseline, MeanBaseline
+from src.models.linear_ridge_jax import RidgeClosedForm
+from src.utils.helpers import log_jax_runtime_info
+from src.utils.io import save_table_xlsx
+from src.utils.preprocess import standardize_design, can_select_group
+from src.utils.preprocess import to_device_array
+from src.utils.targets import forward_transform, inverse_transform, smearing_factor
+from src.visualization import regression_plotting as viz_train
 
 logger = logging.getLogger(__name__)
 YMode = Literal["none", "log1p", "sqrt"]
@@ -215,7 +214,7 @@ def run_regression(
     cfg : ExperimentConfig
         Top-level configuration (paths, splits, features).
     lam_grid : sequence of float
-        The grid of ridge regularization strengths to search on the holdout set.
+        The grid of ridge regularization strengths to search on the validation set.
         The objective minimized is mean squared error with L2 penalty. The final
         metric reported is RMSE on the test set.
     epsilon : float
@@ -226,10 +225,10 @@ def run_regression(
     Notes
     -----
     1) Load processed data (or fetch+clean if missing).
-    2) Chronological split into train, holdout, test.
+    2) Chronological split into train, validation, test.
     3) Build interpretable candidate feature groups (hour cyclical, atemp±poly, etc.).
     4) Forward ablation to find a minimal feature subset and best lambda.
-    5) Fit ridge on train+holdout with the selected lambda.
+    5) Fit ridge on train+validation with the selected lambda.
     6) Evaluate on test, compare to strict blind and semi-blind baselines.
     7) Save a metrics workbook.
     """
@@ -253,7 +252,7 @@ def run_regression(
     splits = DataSplits(train_end=cfg.splits.train_end, validation_end=cfg.splits.validation_end)
     train_df, validation_df, test_df = data_split(df, splits)
     logger.info(
-        "Split sizes: train=%d, holdout=%d, test=%d",
+        "Split sizes: train=%d, validation=%d, test=%d",
         len(train_df),
         len(validation_df),
         len(test_df),
@@ -328,7 +327,7 @@ def run_regression(
             return jnp.concatenate(matrices, axis=1)
         return jnp.empty((len(df_part), 0), dtype=dtype)
 
-    # Fit ridge on train+holdout using selected features and selected lambda.
+    # Fit ridge on train+validation using selected features and selected lambda.
     X_tr = build_design(abl_result.features, train_df)
     X_va = build_design(abl_result.features, validation_df)
     X_te = build_design(abl_result.features, test_df)
@@ -435,7 +434,7 @@ def run_regression(
     if y_transform == "log1p":
         resid_z = z_trh - zhat_trva
         smear_final = smearing_factor(resid_z)
-        logger.info("Smearing factor (train+holdout, log1p): %.6f", smear_final)
+        logger.info("Smearing factor (train+validation, log1p): %.6f", smear_final)
 
     yhat_trva = inverse_transform(zhat_trva, y_transform, smear=smear_final)
     yhat_te = inverse_transform(zhat_te, y_transform, smear=smear_final)
@@ -606,7 +605,7 @@ def run_regression(
             "standardization": scaling_df,
             "design_statistics": design_stats_df,
             "predictions_train": preds_train_df,
-            "predictions_holdout": preds_validation_df,
+            "predictions_validation": preds_validation_df,
             "predictions_test": preds_test_df,
         },
         summary_path,

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from pathlib import Path
 import logging
+from pathlib import Path
 
 import pandas as pd
 
@@ -21,10 +21,6 @@ DROP_IF_PRESENT: tuple[str, ...] = (
 
 def _infer_datetime(df: pd.DataFrame) -> pd.DataFrame:
     """Infer a datetime index.
-
-    According to the website https://archive-beta.ics.uci.edu/dataset/275/bike+sharing+dataset
-    The UCI bike sharing has both daily and hourly versions. We synthesize
-    a proper pandas.DatetimeIndex here for both versions.
 
     Returns a new DataFrame with a 'timestamp' column and a DatetimeIndex.
     """
