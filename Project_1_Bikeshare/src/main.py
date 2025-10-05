@@ -39,7 +39,7 @@ from typing import Literal
 from src.config.experiment_config import ExperimentConfig
 from src.utils.logging import setup_logging
 from src.data.run_eda import run_eda
-from src.training.regression_training import run_train
+from src.training.regression_training import run_regression
 from src.training.classification_training import run_classification
 
 logger = logging.getLogger(__name__)
@@ -66,10 +66,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--mode",
-        choices=["eda", "train", "classify"],
+        choices=["eda", "regression", "classify"],
         default="eda",
         help=(
-            "eda: fetch/clean/visualize; train: ridge regression; "
+            "eda: fetch/clean/visualize; regression: ridge regression; "
             "classify: multinomial logistic regression"
         ),
     )
@@ -139,8 +139,8 @@ def main() -> None:
 
     if args.mode == "eda":
         run_eda(cfg, force_fetch=args.force_fetch)
-    elif args.mode == "train":
-        run_train(cfg, lam_grid=args.lam_grid, epsilon=args.epsilon, y_transform=args.y_transform)
+    elif args.mode == "regression":
+        run_regression(cfg, lam_grid=args.lam_grid, epsilon=args.epsilon, y_transform=args.y_transform)
     elif args.mode == "classify":
         run_classification(
             cfg,

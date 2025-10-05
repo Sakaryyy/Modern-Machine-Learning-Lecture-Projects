@@ -201,7 +201,7 @@ def _approx_condition_number(X: jax.Array) -> float:
     return float(cond)
 
 
-def run_train(
+def run_regression(
         cfg: ExperimentConfig,
         lam_grid: Sequence[float],
         epsilon: float,
