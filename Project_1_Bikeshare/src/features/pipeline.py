@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Callable, List, Optional, Sequence, Tuple
+from typing import Callable, List, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -182,6 +182,50 @@ def numeric_step(
     return step
 
 
+def normalized_numeric_step(
+    col: str,
+    *,
+    data_min: float,
+    data_max: float,
+    dtype: jnp.dtype = jnp.float32,
+) -> StepFn:
+    """Build a step that scales a numeric column into the unit interval.
+
+    Parameters
+    ----------
+    col : str
+        Column to extract from the DataFrame.
+    data_min : float
+        Value mapped to 0.0 after scaling.
+    data_max : float
+        Value mapped to 1.0 after scaling. Must satisfy data_max > data_min.
+    dtype : jax.numpy dtype, default jnp.float32
+        Output dtype of the generated feature column.
+
+    Returns
+    -------
+    step : callable
+        Function step(df) -> (X, names) where X has one column named
+        f"{col}_unit_interval" whose entries lie in [0, 1] after clipping.
+    """
+
+    if not data_max > data_min:
+        raise ValueError(
+            f"data_max must be greater than data_min for normalization. Received {data_min=} and {data_max=}"
+        )
+    span = float(data_max - data_min)
+    offset = float(data_min)
+
+    def step(df: pd.DataFrame) -> Tuple[Array, List[str]]:
+        require_columns(df, [col])
+        values = df.loc[:, [col]].to_numpy(dtype=float)
+        scaled = (values - offset) / span
+        scaled = jnp.clip(jnp.asarray(scaled, dtype=dtype), 0.0, 1.0)
+        return scaled, [f"{col}_unit_interval"]
+
+    return step
+
+
 def polynomial_step(
     col: str,
     degree: int,
@@ -208,10 +252,6 @@ def polynomial_step(
         Whether to include the linear term x.
     dtype : jax.numpy dtype, default jnp.float32
         Floating dtype for the resulting features.
-    device : jax.Device or None, default None
-        Target device. The pipeline will still enforce placement and checks.
-    check_finite : bool, default True
-        If True, raise ValueError on non-finite values.
 
     Returns
     -------
@@ -386,7 +426,6 @@ def weekday_onehot_step(
     ----------
     drop_first : bool, default True
         If True, produce 6 columns (Mon..Sun minus one). If False, 7 columns.
-    dtype, device, check_finite : see other step factories.
 
     Returns
     -------
@@ -464,7 +503,6 @@ def weathersit_onehot_step(
         Column with integer codes 1..4.
     drop_first : bool, default True
         If True, produce 3 columns (codes 2..4). If False, 4 columns.
-    dtype, device, check_finite : see other step factories.
 
     Returns
     -------

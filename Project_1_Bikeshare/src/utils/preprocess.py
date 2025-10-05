@@ -14,6 +14,7 @@ def standardize_design(
     X_te: Array,
     *,
     eps: float = 1e-8,
+    preserve_mask: Optional[Array] = None,
 ) -> Tuple[Array, Array, Array, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """
     Standardize non-binary columns by training mean/std and leave binary columns unchanged.
@@ -29,26 +30,45 @@ def standardize_design(
         Design matrices with identical number of columns.
     eps : float
         Numerical floor added to std to avoid division by zero.
+    preserve_mask : jax.Array of bool, optional
+        Boolean mask with shape (n_features,) marking columns that should remain
+        untouched (mean 0, std 1) during scaling. This is useful for columns that
+        have already been normalized to lie within a specific range (like [0, 1])
+        and should not be z-scored. When provided, the mask is combined with the
+        automatically detected binary mask so that any column marked True is left
+        unchanged.
 
     Returns
     -------
     Xz_tr, Xz_val, Xz_te : jax.Array
         Standardized designs.
-    mu, sd, is_binary : jax.Array
-        Training means, training stds (with eps), and binary mask (0/1) as vectors.
+    mu, sd, preserved : jax.Array
+        Training means, training stds (with eps), and a boolean mask indicating
+        which columns were preserved (either because they were detected as
+        binary or because they were supplied via `preserve_mask`).
     """
     if X_tr.shape[1] == 0:
         zero = jnp.array([], dtype=X_tr.dtype)
         return X_tr, X_val, X_te, zero, zero, zero
 
     is_binary = jnp.all((X_tr == 0.0) | (X_tr == 1.0), axis=0)
-    mu = jnp.where(is_binary, 0.0, jnp.mean(X_tr, axis=0))
-    sd = jnp.where(is_binary, 1.0, jnp.std(X_tr, axis=0) + eps)
+    if preserve_mask is not None:
+        preserve_mask = jnp.asarray(preserve_mask, dtype=bool)
+        if preserve_mask.shape != (X_tr.shape[1],):
+            raise ValueError(
+                "preserve_mask must have shape (n_features,) matching the design matrices"
+            )
+        preserved = jnp.logical_or(is_binary, preserve_mask)
+    else:
+        preserved = is_binary
+
+    mu = jnp.where(preserved, 0.0, jnp.mean(X_tr, axis=0))
+    sd = jnp.where(preserved, 1.0, jnp.std(X_tr, axis=0) + eps)
 
     def zscore(X: Array) -> Array:
         return (X - mu) / sd
 
-    return zscore(X_tr), zscore(X_val), zscore(X_te), mu, sd, is_binary
+    return zscore(X_tr), zscore(X_val), zscore(X_te), mu, sd, preserved
 
 
 def can_select_group(selected_cols: set[str], candidate_group: list[str]) -> bool:

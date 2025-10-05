@@ -17,8 +17,10 @@ This module provides three high-level commands:
    - Fits a ridge regression (JAX) on train+holdout and evaluates on test.
    - Compares against blind baselines.
 
-3) Test mode:
-   - Not Implemented yet.
+3) Classify mode:
+   - Runs multinomial logistic regression (JAX) to predict the hour-of-day.
+   - Mirrors the regression pipeline by performing feature ablation and saving
+     tables/figures under outputs/.
    
 Notes
 --------------
@@ -38,9 +40,11 @@ from src.config.experiment_config import ExperimentConfig
 from src.utils.logging import setup_logging
 from src.data.run_eda import run_eda
 from src.training.regression_training import run_train
+from src.training.classification_training import run_classification
 
 logger = logging.getLogger(__name__)
 YMode = Literal["none", "log1p", "sqrt"]
+
 
 def parse_args() -> argparse.Namespace:
     """
@@ -50,19 +54,24 @@ def parse_args() -> argparse.Namespace:
     -------
     argparse.Namespace
         Parsed arguments with fields:
-        - mode: "eda" or "train"
+        - mode: "eda", "train", or "classify"
         - force_fetch: bool to re-pull raw data
         - lam_grid: list of floats for ridge lambda search
         - epsilon: float tolerance for minimal-subset selection
+        - classify_reg_grid / classify_learning_rate / classify_max_iter / classify_tol
+          for the classification experiment
     """
     parser = argparse.ArgumentParser(
-        description="Bike Sharing: EDA and Linear Regression (JAX)"
+        description="Bike Sharing: EDA, Regression, and Classification in JAX"
     )
     parser.add_argument(
         "--mode",
-        choices=["eda", "train"],
+        choices=["eda", "train", "classify"],
         default="eda",
-        help="eda: fetch/clean/visualize, train: split, ablation, ridge fit, metrics",
+        help=(
+            "eda: fetch/clean/visualize; train: ridge regression; "
+            "classify: multinomial logistic regression"
+        ),
     )
     parser.add_argument(
         "--force-fetch",
@@ -83,6 +92,31 @@ def parse_args() -> argparse.Namespace:
         help="Relative tolerance against best validation RMSE to pick a minimal feature set.",
     )
     parser.add_argument(
+        "--classify-reg-grid",
+        type=float,
+        nargs="+",
+        default=[0.0, 1e-4, 1e-3, 1e-2, 1e-1, 1.0],
+        help="Grid of L2 penalties to evaluate during classification ablation.",
+    )
+    parser.add_argument(
+        "--classify-learning-rate",
+        type=float,
+        default=0.01,
+        help="Learning rate for gradient descent in softmax regression.",
+    )
+    parser.add_argument(
+        "--classify-max-iter",
+        type=int,
+        default=500,
+        help="Maximum number of gradient steps for classification mode.",
+    )
+    parser.add_argument(
+        "--classify-tol",
+        type=float,
+        default=1e-6,
+        help="Gradient-norm convergence tolerance for classification mode.",
+    )
+    parser.add_argument(
         "--y-transform",
         choices=["none", "log1p", "sqrt"],
         default="none",
@@ -97,7 +131,7 @@ def main() -> None:
 
     - Configures logging.
     - Parses arguments.
-    - Dispatches to EDA or training.
+    - Dispatches to EDA, regression training, or classification training.
     """
     setup_logging()
     cfg = ExperimentConfig.default()
@@ -107,6 +141,15 @@ def main() -> None:
         run_eda(cfg, force_fetch=args.force_fetch)
     elif args.mode == "train":
         run_train(cfg, lam_grid=args.lam_grid, epsilon=args.epsilon, y_transform=args.y_transform)
+    elif args.mode == "classify":
+        run_classification(
+            cfg,
+            reg_grid=args.classify_reg_grid,
+            epsilon=args.epsilon,
+            learning_rate=args.classify_learning_rate,
+            max_iter=args.classify_max_iter,
+            tol=args.classify_tol,
+        )
     else:
         # Defensive programming: argparse should prevent this branch.
         raise ValueError(f"Unknown mode: {args.mode}")

@@ -34,7 +34,14 @@ class Paths:
 
         This function is safe to call multiple times.
         """
-        for p in (self.raw_dir, self.processed_dir, self.eda_figures_dir, self.eda_tables_dir):
+        for p in (
+                self.raw_dir,
+                self.processed_dir,
+                self.eda_figures_dir,
+                self.eda_tables_dir,
+                self.model_figures_dir,
+                self.model_tables_dir,
+        ):
             p.mkdir(parents=True, exist_ok=True)
 
 @dataclass(frozen=True)

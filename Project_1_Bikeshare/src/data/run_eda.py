@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 
-from src.visualization import eda
+from src.visualization import eda_plotting
 from src.config.experiment_config import ExperimentConfig
 from src.data.fetch import fetch_uci_bike
 from src.data.clean import clean_bike_df, save_processed

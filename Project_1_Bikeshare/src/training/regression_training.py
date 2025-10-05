@@ -17,7 +17,7 @@ from src.utils.helpers import log_jax_runtime_info
 from src.data.fetch import fetch_uci_bike
 from src.data.clean import clean_bike_df, save_processed
 from src.data.split import DataSplits, data_split
-from src.visualization import train as viz_train
+from src.visualization import regression_plotting as viz_train
 from src.features.pipeline import (
     FeaturePipeline,
     interaction_onehot_numeric_step,
@@ -34,7 +34,7 @@ from src.features.pipeline import (
 from src.models.linear_ridge_jax import RidgeClosedForm
 from src.models.baselines import HourOfDayBaseline, MeanBaseline
 from src.metrics.regression import mae, r2, rmse
-from src.evaluation.ablation import forward_ablation
+from src.evaluation.ablation_regression import forward_ablation
 
 logger = logging.getLogger(__name__)
 YMode = Literal["none", "log1p", "sqrt"]
@@ -400,8 +400,9 @@ def run_train(cfg: ExperimentConfig, lam_grid: Sequence[float], epsilon: float, 
             },
         ]
     )
-    save_table_xlsx({"metrics": metrics_df}, cfg.paths.model_tables_dir / "metrics.xlsx")
-    logger.info(f"Saved metrics -> {cfg.paths.model_tables_dir / "metrics.xlsx"}")
+    metrics_path = cfg.paths.model_tables_dir / "metrics.xlsx"
+    save_table_xlsx({"metrics": metrics_df}, metrics_path)
+    logger.info("Saved metrics -> %s", metrics_path)
 
     # Training visualizations and tabular diagnostics
 
