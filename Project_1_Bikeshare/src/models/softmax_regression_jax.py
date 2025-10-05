@@ -7,7 +7,7 @@ import jax
 import jax.numpy as jnp
 from jax.scipy.special import logsumexp
 
-from utils.preprocess import to_device_array
+from src.utils.preprocess import to_device_array
 
 Array = jax.Array
 

@@ -32,6 +32,6 @@ def run_eda(cfg: ExperimentConfig, force_fetch: bool) -> None:
     clean_df = clean_bike_df(raw_df)
     save_processed(clean_df, cfg.paths.processed_dir)
 
-    results = eda.run_all(clean_df, cfg.paths.eda_figures_dir)
+    results = eda_plotting.run_all(clean_df, cfg.paths.eda_figures_dir)
     for name, path in results.items():
         logger.info(f"Saved {name} -> {path}")

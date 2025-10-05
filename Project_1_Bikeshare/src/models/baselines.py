@@ -7,7 +7,7 @@ import jax
 import jax.numpy as jnp
 import pandas as pd
 
-from utils.preprocess import to_device_array
+from src.utils.preprocess import to_device_array
 from src.utils.helpers import require_columns
 from src.utils.feature_mapping import ensure_hour_column
 

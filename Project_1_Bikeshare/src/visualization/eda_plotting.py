@@ -14,7 +14,7 @@ from src.utils.feature_mapping import add_interpretable_columns, ensure_hour_col
 
 logger = logging.getLogger(__name__)
 
-__doc__ = r"""
+r"""
 EDA visualization utilities.
 
 Three common cases for Correlation Analysis:

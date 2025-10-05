@@ -10,7 +10,7 @@ import jax.numpy as jnp
 
 from src.config.experiment_config import ExperimentConfig
 from src.utils.io import save_table_xlsx
-from utils.preprocess import to_device_array
+from src.utils.preprocess import to_device_array
 from src.utils.targets import forward_transform, inverse_transform, smearing_factor
 from src.utils.preprocess import standardize_design, can_select_group
 from src.utils.helpers import log_jax_runtime_info

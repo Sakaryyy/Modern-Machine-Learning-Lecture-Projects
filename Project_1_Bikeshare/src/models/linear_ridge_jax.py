@@ -6,7 +6,7 @@ from typing import Literal, Optional, Tuple
 import jax
 import jax.numpy as jnp
 
-from utils.preprocess import to_device_array
+from src.utils.preprocess import to_device_array
 
 Array = jax.Array
 

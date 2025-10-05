@@ -16,7 +16,7 @@ import jax.numpy as jnp
 import numpy as np
 import pandas as pd
 
-from utils.preprocess import to_device_array
+from src.utils.preprocess import to_device_array
 from src.utils.helpers import require_columns
 
 Array = jax.Array
