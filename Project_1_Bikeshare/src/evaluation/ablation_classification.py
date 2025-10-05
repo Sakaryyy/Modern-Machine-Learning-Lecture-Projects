@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import List, Optional, Sequence, Tuple
 
@@ -72,6 +73,7 @@ def forward_ablation_classification(
     learning_rate: float = 0.1,
     tol: float = 1e-6,
     record_trace: bool = False,
+    logger: Optional[logging.Logger] = None,
 ) -> ClassificationAblationResult | Tuple[ClassificationAblationResult, pd.DataFrame]:
     """Run greedy forward ablation tailored to softmax regression."""
 
@@ -113,6 +115,7 @@ def forward_ablation_classification(
             )
 
             for lam in reg_grid:
+                logger.info(f"[Ablation] Fitting for pipes: {names} with lam: {lam} out of {reg_grid}")
                 lam_eff = float(max(lam, 0.0))
                 model = SoftmaxRegression(
                     n_classes=n_classes,
@@ -122,6 +125,9 @@ def forward_ablation_classification(
                     tol=tol,
                     dtype=dtype,
                     device=device,
+                    logger=logger,
+                    record_history=False,
+                    log_every=0,
                 )
                 fit = model.fit(X_tr_std, y_tr)
                 proba_tr = model.predict_proba(X_tr_std, fit)
@@ -192,6 +198,16 @@ def forward_ablation_classification(
                 "best_overall_val_misclassification_so_far": best_overall,
             }
         )
+
+        if logger is not None:
+            logger.info(
+                "[ablation] step=%d picked=%s lambda=%.4g val_err=%.4f train_err=%.4f",
+                step,
+                ", ".join(group_names),
+                lam_eff,
+                mis_val,
+                mis_tr,
+            )
 
         remaining = [g for g in remaining if g[0] != group_names]
 

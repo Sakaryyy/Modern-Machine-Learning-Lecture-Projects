@@ -101,13 +101,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--classify-learning-rate",
         type=float,
-        default=0.01,
+        default=0.1,
         help="Learning rate for gradient descent in softmax regression.",
     )
     parser.add_argument(
         "--classify-max-iter",
         type=int,
-        default=500,
+        default=1000,
         help="Maximum number of gradient steps for classification mode.",
     )
     parser.add_argument(

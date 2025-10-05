@@ -8,7 +8,7 @@ import pandas as pd
 import jax
 import jax.numpy as jnp
 
-from src.config.experiment_config import ExperimentConfig
+from src.config.experiment_config import ExperimentConfig, FeatureConfig
 from src.utils.io import save_table_xlsx
 from src.utils.preprocess import to_device_array
 from src.utils.targets import forward_transform, inverse_transform, smearing_factor
@@ -41,7 +41,7 @@ YMode = Literal["none", "log1p", "sqrt"]
 
 
 def build_candidate_groups(
-        cfg_feats
+        cfg_feats: FeatureConfig,
 ) -> List[Tuple[List[str], FeaturePipeline]]:
     """
     Create interpretable feature groups for forward ablation.
@@ -201,7 +201,12 @@ def _approx_condition_number(X: jax.Array) -> float:
     return float(cond)
 
 
-def run_train(cfg: ExperimentConfig, lam_grid: Sequence[float], epsilon: float, y_transform: YMode) -> None:
+def run_train(
+        cfg: ExperimentConfig,
+        lam_grid: Sequence[float],
+        epsilon: float,
+        y_transform: YMode
+) -> None:
     """
     Train a ridge regression with forward ablation and evaluate against baselines.
 
@@ -247,21 +252,32 @@ def run_train(cfg: ExperimentConfig, lam_grid: Sequence[float], epsilon: float, 
     # Datasplitting via Timeline.
     splits = DataSplits(train_end=cfg.splits.train_end, validation_end=cfg.splits.validation_end)
     train_df, validation_df, test_df = data_split(df, splits)
-    logger.info(f"Split sizes: train={len(train_df)}, holdout={len(validation_df)}, test={len(test_df)}")
+    logger.info(
+        "Split sizes: train=%d, holdout=%d, test=%d",
+        len(train_df),
+        len(validation_df),
+        len(test_df),
+    )
 
     # Targets to device as JAX vectors.
-    y_tr = to_device_array(train_df["cnt"].to_numpy(dtype=float), dtype=dtype, device=device, check_finite=True)
-    y_va = to_device_array(validation_df["cnt"].to_numpy(dtype=float), dtype=dtype, device=device, check_finite=True)
-    y_te = to_device_array(test_df["cnt"].to_numpy(dtype=float), dtype=dtype, device=device, check_finite=True)
+    y_tr = to_device_array(
+        train_df["cnt"].to_numpy(dtype=float), dtype=dtype, device=device, check_finite=True
+    )
+    y_va = to_device_array(
+        validation_df["cnt"].to_numpy(dtype=float), dtype=dtype, device=device, check_finite=True
+    )
+    y_te = to_device_array(
+        test_df["cnt"].to_numpy(dtype=float), dtype=dtype, device=device, check_finite=True
+    )
 
     # Baselines.
     mean_bl = MeanBaseline.from_train(y_tr, dtype=dtype, device=device)
     hod_bl = HourOfDayBaseline.from_train(train_df, dtype=dtype, device=device)
 
     # Candidate groups and ablation.
-    logger.info("Lambda grid: %s", ", ".join(f"{l:.4g}" for l in lam_grid))
+    logger.info("Lambda grid: %s", ", ".join(f"{lam:.4g}" for lam in lam_grid))
     candidate_groups = build_candidate_groups(cfg.features)
-    abl, abl_trace = forward_ablation(
+    abl_result, abl_trace = forward_ablation(
         df_tr=train_df,
         y_tr=y_tr,
         df_val=validation_df,
@@ -275,173 +291,414 @@ def run_train(cfg: ExperimentConfig, lam_grid: Sequence[float], epsilon: float, 
         logger=logger,
         can_select=can_select_group
     )
+    steps_completed = (
+        int(abl_trace["step"].max()) if hasattr(abl_trace, "empty") and not abl_trace.empty else len(
+            abl_result.features)
+    )
     logger.info(
-        f"Ablation choice: features={abl.features}, lambda={abl.lam:.5g}, "
-        f"rmse_tr={abl.rmse_tr:.3f}, rmse_val={abl.rmse_val:.3f}",
+    "Ablation selected %d features over %d greedy steps with lambda=%.4g (val rmse=%.3f)",
+    len(abl_result.features),
+        steps_completed,
+        abl_result.lam,
+        abl_result.rmse_val,
     )
 
     # Verify minimality contract
     best_overall = float(abl_trace["best_overall_rmse_val_so_far"].min())
     threshold = (1.0 + float(epsilon)) * best_overall
-    logger.info("Minimality threshold: (1+epsilon)*best = %.6f with epsilon=%.4f", threshold, epsilon)
-    logger.info("Final chosen validation RMSE: %.6f", abl.rmse_val)
+    logger.info(
+        "Minimality threshold: %.6f (epsilon=%.4f, best validation RMSE=%.6f)",
+        threshold,
+        epsilon,
+        best_overall,
+    )
 
     # Helper to compose the JAX design for an arbitrary DataFrame and a chosen column list.
     def build_design(chosen_feats: List[str], df_part: pd.DataFrame) -> jax.Array:
+        """Assemble the design matrix restricted to ``chosen_feats`` for ``df_part``."""
+
         matrices: List[jax.Array] = []
         for group_names, pipe in candidate_groups:
             X, cols = pipe.transform(df_part)
             # Keep only columns present in chosen_feats
-            idx = [i for i, c in enumerate(cols) if c in chosen_feats]
+            idx = [i for i, col in enumerate(cols) if col in chosen_feats]
             if idx:
-                X_sel = X[:, jnp.array(idx, dtype=jnp.int32)]
-                matrices.append(X_sel)
+                matrices.append(X[:, jnp.array(idx, dtype=jnp.int32)])
         if matrices:
             return jnp.concatenate(matrices, axis=1)
         return jnp.empty((len(df_part), 0), dtype=dtype)
 
     # Fit ridge on train+holdout using selected features and selected lambda.
-    X_tr = build_design(abl.features, train_df)
-    X_va = build_design(abl.features, validation_df)
-    X_te = build_design(abl.features, test_df)
+    X_tr = build_design(abl_result.features, train_df)
+    X_va = build_design(abl_result.features, validation_df)
+    X_te = build_design(abl_result.features, test_df)
 
-    X_tr, X_va, X_te, mu, sd, is_bin = standardize_design(X_tr, X_va, X_te)
-    logger.info("Standardization: %d binary columns left unscaled; %d scaled.",
-                int(jnp.sum(is_bin)), X_tr.shape[1] - int(jnp.sum(is_bin)))
+    X_tr, X_va, X_te, mu, sd, is_binary = standardize_design(X_tr, X_va, X_te)
+    logger.info(
+        "Standardization preserved %d binary columns and scaled %d numeric columns.",
+        int(jnp.sum(is_binary)),
+        X_tr.shape[1] - int(jnp.sum(is_binary)),
+    )
 
-    # Transform targets for fitting (log1p or sqrt)
     z_tr = forward_transform(y_tr, y_transform)
     z_va = forward_transform(y_va, y_transform)
-    z_te = forward_transform(y_te, y_transform)
 
-    X_trh = jnp.concatenate([X_tr, X_va], axis=0)
+    logger.info(
+        "Design shapes: train=%s, validation=%s, test=%s",
+        X_tr.shape,
+        X_va.shape,
+        X_te.shape,
+    )
+    logger.info(
+        "Condition numbers: train=%.3e, validation=%.3e",
+        _approx_condition_number(X_tr),
+        _approx_condition_number(X_va),
+    )
+
+    model_train_only = RidgeClosedForm(
+        lam=float(abl_result.lam), dtype=dtype, device=device, fit_intercept=True
+    )
+    fit_train_only = model_train_only.fit(X_tr, z_tr)
+    logger.info(
+        "Train-only ridge fit: intercept b=%.6f, training sigma²=%.6f",
+        fit_train_only.b,
+        fit_train_only.sigma2,
+    )
+
+    zhat_tr_train = model_train_only.predict(X_tr, fit_train_only)
+    zhat_va_train = model_train_only.predict(X_va, fit_train_only)
+
+    smear_train = None
+    if y_transform == "log1p":
+        resid_train = z_tr - zhat_tr_train
+        smear_train = smearing_factor(resid_train)
+        logger.info("Smearing factor (train split, log1p): %.6f", smear_train)
+
+    yhat_tr_train = inverse_transform(zhat_tr_train, y_transform, smear=smear_train)
+    yhat_va_train = inverse_transform(zhat_va_train, y_transform, smear=smear_train)
+    yhat_tr_train = jnp.maximum(yhat_tr_train, 0.0)
+    yhat_va_train = jnp.maximum(yhat_va_train, 0.0)
+
+    metrics_train = {
+        "rmse": rmse(y_tr, yhat_tr_train),
+        "mae": mae(y_tr, yhat_tr_train),
+        "r2": r2(y_tr, yhat_tr_train),
+    }
+    metrics_validation = {
+        "rmse": rmse(y_va, yhat_va_train),
+        "mae": mae(y_va, yhat_va_train),
+        "r2": r2(y_va, yhat_va_train),
+    }
+    logger.info(
+        "Train-only metrics: train RMSE=%.4f MAE=%.4f R2=%.4f | validation RMSE=%.4f MAE=%.4f R2=%.4f",
+        metrics_train["rmse"],
+        metrics_train["mae"],
+        metrics_train["r2"],
+        metrics_validation["rmse"],
+        metrics_validation["mae"],
+        metrics_validation["r2"],
+    )
+
+    yhat_mean_tr = jnp.maximum(mean_bl.predict(len(train_df)), 0.0)
+    yhat_mean_va = jnp.maximum(mean_bl.predict(len(validation_df)), 0.0)
+    yhat_mean_te = jnp.maximum(mean_bl.predict(len(test_df)), 0.0)
+
+    yhat_hod_tr = jnp.maximum(hod_bl.predict(train_df), 0.0)
+    yhat_hod_va = jnp.maximum(hod_bl.predict(validation_df), 0.0)
+    yhat_hod_te = jnp.maximum(hod_bl.predict(test_df), 0.0)
+
+    X_trva = jnp.concatenate([X_tr, X_va], axis=0)
     z_trh = jnp.concatenate([z_tr, z_va], axis=0)
     y_trh_orig = jnp.concatenate([y_tr, y_va], axis=0)
 
-    logger.info("Design shapes: X_tr=(%d,%d), X_va=(%d,%d), X_trh=(%d,%d), X_te=(%d,%d)",
-                X_tr.shape[0], X_tr.shape[1],
-                X_va.shape[0], X_va.shape[1],
-                X_trh.shape[0], X_trh.shape[1],
-                X_te.shape[0], X_te.shape[1])
+    logger.info(
+        "Combined design shape train+validation=%s with condition≈%.3e",
+        X_trva.shape,
+        _approx_condition_number(X_trva),
+    )
 
-    cond_trh = _approx_condition_number(X_trh)
-    logger.info(f"Approximate condition number of centered X_trh: {cond_trh:.3e}")
-
-    model = RidgeClosedForm(lam=float(abl.lam), dtype=dtype, device=device, fit_intercept=True)
-    fit = model.fit(X_trh, z_trh)
-    logger.info(f"Fitted ridge: intercept b={fit.b:.6f}, training MSE sigma2={fit.sigma2:.6f} "
-                f"on transformed target '{y_transform}'.")
+    model_final = RidgeClosedForm(
+        lam=float(abl_result.lam), dtype=dtype, device=device, fit_intercept=True
+    )
+    fit_final = model_final.fit(X_trva, z_trh)
+    logger.info(
+        "Final ridge fit (train+validation): intercept b=%.6f, sigma²=%.6f",
+        fit_final.b,
+        fit_final.sigma2,
+    )
 
     # Test design and predictions.
-    zhat_trh = model.predict(X_trh, fit)
-    zhat_te = model.predict(X_te, fit)
+    zhat_trva = model_final.predict(X_trva, fit_final)
+    zhat_te = model_final.predict(X_te, fit_final)
 
-    smear = None
+    smear_final = None
     if y_transform == "log1p":
-        resid_z = z_trh - zhat_trh
-        smear = smearing_factor(resid_z)
-        logger.info("Smearing factor (log1p): %.6f", smear)
+        resid_z = z_trh - zhat_trva
+        smear_final = smearing_factor(resid_z)
+        logger.info("Smearing factor (train+holdout, log1p): %.6f", smear_final)
 
-    yhat_trh = inverse_transform(zhat_trh, y_transform, smear=smear)
-    yhat_te = inverse_transform(zhat_te, y_transform, smear=smear)
-    yhat_trh = jnp.maximum(yhat_trh, 0.0)
+    yhat_trva = inverse_transform(zhat_trva, y_transform, smear=smear_final)
+    yhat_te = inverse_transform(zhat_te, y_transform, smear=smear_final)
+
+    yhat_trva = jnp.maximum(yhat_trva, 0.0)
     yhat_te = jnp.maximum(yhat_te, 0.0)
 
-    # Metrics.
-    rmse_trh = rmse(y_trh_orig, yhat_trh)
-    rmse_test = rmse(y_te, yhat_te)
-    mae_test = mae(y_te, yhat_te)
-    r2_test = r2(y_te, yhat_te)
-    logger.info(f"Final metrics: RMSE(tr+val)={rmse_trh:.4f}, RMSE(test)={rmse_test:.4f}, "
-                f"MAE(test)={mae_test:.4f}, R2(test)={r2_test:.4f}")
+    metrics_trva = {
+        "rmse": rmse(y_trh_orig, yhat_trva),
+        "mae": mae(y_trh_orig, yhat_trva),
+        "r2": r2(y_trh_orig, yhat_trva),
+    }
+    metrics_test = {
+        "rmse": rmse(y_te, yhat_te),
+        "mae": mae(y_te, yhat_te),
+        "r2": r2(y_te, yhat_te),
+    }
+    logger.info(
+        "Final metrics (train+validation -> test): train+validation RMSE=%.4f MAE=%.4f R2=%.4f | test RMSE=%.4f MAE=%.4f R2=%.4f",
+        metrics_trva["rmse"],
+        metrics_trva["mae"],
+        metrics_trva["r2"],
+        metrics_test["rmse"],
+        metrics_test["mae"],
+        metrics_test["r2"],
+    )
 
-    # Baselines on test.
-    yhat_mean = jnp.maximum(mean_bl.predict(len(test_df)), 0.0)
-    yhat_hod = jnp.maximum(hod_bl.predict(test_df), 0.0)
-    rmse_mean = rmse(y_te, yhat_mean)
-    rmse_hod = rmse(y_te, yhat_hod)
-    logger.info(f"Baselines RMSE(test): mean={rmse_mean:.4f}, hour-of-day={rmse_hod:.4f}")
+    baseline_validation = {
+        "mean": {
+            "rmse": rmse(y_va, yhat_mean_va),
+            "mae": mae(y_va, yhat_mean_va),
+            "r2": r2(y_va, yhat_mean_va),
+        },
+        "hour_of_day": {
+            "rmse": rmse(y_va, yhat_hod_va),
+            "mae": mae(y_va, yhat_hod_va),
+            "r2": r2(y_va, yhat_hod_va),
+        },
+    }
+    baseline_test = {
+        "mean": {
+            "rmse": rmse(y_te, yhat_mean_te),
+            "mae": mae(y_te, yhat_mean_te),
+            "r2": r2(y_te, yhat_mean_te),
+        },
+        "hour_of_day": {
+            "rmse": rmse(y_te, yhat_hod_te),
+            "mae": mae(y_te, yhat_hod_te),
+            "r2": r2(y_te, yhat_hod_te),
+        },
+    }
+    logger.info(
+        "Baseline RMSE (validation): mean=%.4f hour-of-day=%.4f | (test): mean=%.4f hour-of-day=%.4f",
+        baseline_validation["mean"]["rmse"],
+        baseline_validation["hour_of_day"]["rmse"],
+        baseline_test["mean"]["rmse"],
+        baseline_test["hour_of_day"]["rmse"],
+    )
 
     # Save metrics workbook.
-    metrics_df = pd.DataFrame(
+    metrics_table = pd.DataFrame(
         [
             {
-                "model": "ridge",
+                "split": "train",
+                "fit": "train_only",
                 "y_transform": y_transform,
-                "smearing": float(smear) if smear is not None else float("nan"),
-                "features": ", ".join(abl.features),
-                "lambda": float(abl.lam),
-                "rmse_train_holdout": rmse_trh,
-                "rmse_test": rmse_test,
-                "mae_test": mae_test,
-                "r2_test": r2_test,
+                "smearing": float(smear_train) if smear_train is not None else float("nan"),
+                "rmse": float(metrics_train["rmse"]),
+                "mae": float(metrics_train["mae"]),
+                "r2": float(metrics_train["r2"]),
             },
             {
-                "model": "baseline_mean",
-                "y_transform": "none",
-                "smearing": float("nan"),
-                "features": "-",
-                "lambda": float("nan"),
-                "rmse_train_holdout": float("nan"),
-                "rmse_test": float(rmse_mean),
-                "mae_test": float("nan"),
-                "r2_test": float("nan"),
+                "split": "validation",
+                "fit": "train_only",
+                "y_transform": y_transform,
+                "smearing": float(smear_train) if smear_train is not None else float("nan"),
+                "rmse": float(metrics_validation["rmse"]),
+                "mae": float(metrics_validation["mae"]),
+                "r2": float(metrics_validation["r2"]),
             },
             {
-                "model": "baseline_hour_of_day",
-                "y_transform": "none",
-                "smearing": float("nan"),
-                "features": "-",
-                "lambda": float("nan"),
-                "rmse_train_holdout": float("nan"),
-                "rmse_test": float(rmse_hod),
-                "mae_test": float("nan"),
-                "r2_test": float("nan"),
+                "split": "train+validation",
+                "fit": "final",
+                "y_transform": y_transform,
+                "smearing": float(smear_final) if smear_final is not None else float("nan"),
+                "rmse": float(metrics_trva["rmse"]),
+                "mae": float(metrics_trva["mae"]),
+                "r2": float(metrics_trva["r2"]),
+            },
+            {
+                "split": "test",
+                "fit": "final",
+                "y_transform": y_transform,
+                "smearing": float(smear_final) if smear_final is not None else float("nan"),
+                "rmse": float(metrics_test["rmse"]),
+                "mae": float(metrics_test["mae"]),
+                "r2": float(metrics_test["r2"]),
             },
         ]
     )
-    metrics_path = cfg.paths.model_tables_dir / "metrics.xlsx"
-    save_table_xlsx({"metrics": metrics_df}, metrics_path)
-    logger.info("Saved metrics -> %s", metrics_path)
+    baseline_rows = []
+    for split, metrics_map in ("validation", baseline_validation), ("test", baseline_test):
+        for model_name, vals in metrics_map.items():
+            baseline_rows.append(
+                {
+                    "split": split,
+                    "model": model_name,
+                    "rmse": float(vals["rmse"]),
+                    "mae": float(vals["mae"]),
+                    "r2": float(vals["r2"]),
+                }
+            )
+    baseline_table = pd.DataFrame(baseline_rows)
 
     # Training visualizations and tabular diagnostics
 
-    # 1) Lambda curve for the selected subset on validation.
     lam_curve_df = viz_train.compute_lambda_curve(
-        train_df, validation_df, y_tr, y_va, candidate_groups, abl.features, lam_grid, dtype, device
+        train_df, validation_df, y_tr, y_va, candidate_groups, abl_result.features, lam_grid, dtype, device
     )
-    viz_train.plot_lambda_curve(lam_curve_df, cfg.paths.model_figures_dir / "lambda_curve_selected.png")
-    # Save the curve as a sheet too.
-    save_table_xlsx({"lambda_curve_selected": lam_curve_df}, cfg.paths.model_tables_dir / "training_report_lambda_curve.xlsx")
 
-    # 2) Ablation path: best validation RMSE vs number of groups.
     ablation_path_df = viz_train.compute_ablation_path(
         train_df, validation_df, y_tr, y_va, candidate_groups, lam_grid, dtype, device
     )
-    viz_train.plot_ablation_path(ablation_path_df, cfg.paths.model_figures_dir / "ablation_path.png")
-    save_table_xlsx({"ablation_path": ablation_path_df}, cfg.paths.model_tables_dir / "training_report_ablation_path.xlsx")
-
-    # 3) Coefficients for the final model.
-    coef_df = viz_train.coefficient_table(fit, abl.features)
-    viz_train.plot_coefficients(coef_df, cfg.paths.model_figures_dir / "coefficients_bar.png")
-    save_table_xlsx({"coefficients": coef_df}, cfg.paths.model_tables_dir / "model_coefficients.xlsx")
-
-    # 4) Test-set predictions and residual diagnostics.
-    preds_df = viz_train.predictions_table(test_df.index, y_te, yhat_te, yhat_mean, yhat_hod)
-    viz_train.plot_parity(preds_df, cfg.paths.model_figures_dir / "parity_test.png")
-    viz_train.plot_residual_hist(preds_df, cfg.paths.model_figures_dir / "residual_hist_test.png")
-    viz_train.plot_residual_vs_pred(preds_df, cfg.paths.model_figures_dir / "residual_vs_pred_test.png")
-    viz_train.plot_timeseries_overlay(preds_df, cfg.paths.model_figures_dir / "timeseries_overlay_test.png")
-    viz_train.plot_baseline_comparison(metrics_df, cfg.paths.model_figures_dir / "baseline_comparison.png")
-    viz_train.plot_ablation_trace_table(abl_trace, cfg.paths.model_figures_dir / "ablation_trace_table.png")
-    viz_train.plot_residuals_by_hour(preds_df, cfg.paths.model_figures_dir / "residuals_by_hour.png")
-    save_table_xlsx({"predictions_test": preds_df}, cfg.paths.model_tables_dir / "predictions_test.xlsx")
-
-    # 5) Save a light-weight checkpoint for reproducibility.
-    viz_train.save_checkpoint(
-        path=cfg.paths.model_tables_dir.parent / "models" / "ridge_checkpoint.npz",
-        fit=fit,
-        selected_features=abl.features,
-        lam=abl.lam,
+    coef_df = viz_train.coefficient_table(fit_final, abl_result.features)
+    selected_features_df = pd.DataFrame({"feature": abl_result.features})
+    scaling_df = pd.DataFrame(
+        {
+            "feature": abl_result.features,
+            "mean": jnp.asarray(mu, dtype=float).tolist(),
+            "std": jnp.asarray(sd, dtype=float).tolist(),
+            "is_binary": jnp.asarray(is_binary, dtype=bool).tolist(),
+        }
     )
-    logger.info("Saved model checkpoint.")
+
+    design_stats_df = pd.DataFrame(
+        [
+            {"split": "train", "n_rows": X_tr.shape[0], "n_cols": X_tr.shape[1],
+             "condition": _approx_condition_number(X_tr)},
+            {"split": "validation", "n_rows": X_va.shape[0], "n_cols": X_va.shape[1],
+             "condition": _approx_condition_number(X_va)},
+            {"split": "train+validation", "n_rows": X_trva.shape[0], "n_cols": X_trva.shape[1],
+             "condition": _approx_condition_number(X_trva)},
+            {"split": "test", "n_rows": X_te.shape[0], "n_cols": X_te.shape[1],
+             "condition": _approx_condition_number(X_te)},
+        ]
+    )
+
+    preds_train_df = viz_train.predictions_table(
+        train_df.index, y_tr, yhat_tr_train, yhat_mean_tr, yhat_hod_tr, split="train"
+    )
+    preds_validation_df = viz_train.predictions_table(
+        validation_df.index, y_va, yhat_va_train, yhat_mean_va, yhat_hod_va, split="validation"
+    )
+    preds_test_df = viz_train.predictions_table(
+        test_df.index, y_te, yhat_te, yhat_mean_te, yhat_hod_te, split="test"
+    )
+
+    summary_path = cfg.paths.regression_tables_dir / "regression_summary.xlsx"
+    save_table_xlsx(
+        {
+            "metrics": metrics_table,
+            "baselines": baseline_table,
+            "ablation_trace": abl_trace,
+            "lambda_curve": lam_curve_df,
+            "ablation_path": ablation_path_df,
+            "coefficients": coef_df,
+            "selected_features": selected_features_df,
+            "standardization": scaling_df,
+            "design_statistics": design_stats_df,
+            "predictions_train": preds_train_df,
+            "predictions_holdout": preds_validation_df,
+            "predictions_test": preds_test_df,
+        },
+        summary_path,
+    )
+    logger.info("Saved regression tables to %s", summary_path)
+
+    metrics_path = cfg.paths.regression_tables_dir / "metrics.xlsx"
+    save_table_xlsx({"metrics": metrics_table}, metrics_path)
+    logger.info("Saved compatibility metrics workbook to %s", metrics_path)
+
+    fig_lambda = viz_train.plot_lambda_curve(
+        lam_curve_df, cfg.paths.regression_figures_dir / "lambda_curve_selected.png"
+    )
+    fig_ablation_path = viz_train.plot_ablation_path(
+        ablation_path_df, cfg.paths.regression_figures_dir / "ablation_path.png"
+    )
+    fig_coeff = viz_train.plot_coefficients(
+        coef_df, cfg.paths.regression_figures_dir / "coefficients_bar.png"
+    )
+
+    fig_parity_validation = viz_train.plot_parity(
+        preds_validation_df, cfg.paths.regression_figures_dir / "parity_validation.png", split="validation"
+    )
+    fig_parity_test = viz_train.plot_parity(
+        preds_test_df, cfg.paths.regression_figures_dir / "parity_test.png", split="test"
+    )
+
+    fig_resid_hist_validation = viz_train.plot_residual_hist(
+        preds_validation_df, cfg.paths.regression_figures_dir / "residual_hist_validation.png", split="validation"
+    )
+    fig_resid_hist_test = viz_train.plot_residual_hist(
+        preds_test_df, cfg.paths.regression_figures_dir / "residual_hist_test.png", split="test"
+    )
+
+    fig_resid_vs_pred_validation = viz_train.plot_residual_vs_pred(
+        preds_validation_df, cfg.paths.regression_figures_dir / "residual_vs_pred_validation.png", split="validation"
+    )
+    fig_resid_vs_pred_test = viz_train.plot_residual_vs_pred(
+        preds_test_df, cfg.paths.regression_figures_dir / "residual_vs_pred_test.png", split="test"
+    )
+
+    fig_timeseries_validation = viz_train.plot_timeseries_overlay(
+        preds_validation_df, cfg.paths.regression_figures_dir / "timeseries_overlay_validation.png", split="validation"
+    )
+    fig_timeseries_test = viz_train.plot_timeseries_overlay(
+        preds_test_df, cfg.paths.regression_figures_dir / "timeseries_overlay_test.png", split="test"
+    )
+
+    fig_residuals_hour_validation = viz_train.plot_residuals_by_hour(
+        preds_validation_df, cfg.paths.regression_figures_dir / "residuals_by_hour_validation.png", split="validation"
+    )
+    fig_residuals_hour_test = viz_train.plot_residuals_by_hour(
+        preds_test_df, cfg.paths.regression_figures_dir / "residuals_by_hour_test.png", split="test"
+    )
+
+    test_comparison_df = pd.DataFrame(
+        [
+            {"model": "ridge", "rmse_test": float(metrics_test["rmse"])},
+            {"model": "baseline_mean", "rmse_test": float(baseline_test["mean"]["rmse"])},
+            {"model": "baseline_hour_of_day", "rmse_test": float(baseline_test["hour_of_day"]["rmse"])},
+        ]
+    )
+    fig_baseline = viz_train.plot_baseline_comparison(
+        test_comparison_df, cfg.paths.regression_figures_dir / "baseline_comparison.png"
+    )
+    fig_ablation_trace = viz_train.plot_ablation_trace_table(
+        abl_trace, cfg.paths.regression_figures_dir / "ablation_trace_table.png"
+    )
+
+    logger.info(
+        "Saved regression figures: %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s",
+        fig_lambda,
+        fig_ablation_path,
+        fig_coeff,
+        fig_parity_validation,
+        fig_parity_test,
+        fig_resid_hist_validation,
+        fig_resid_hist_test,
+        fig_resid_vs_pred_validation,
+        fig_resid_vs_pred_test,
+        fig_timeseries_validation,
+        fig_timeseries_test,
+        fig_residuals_hour_validation,
+        fig_residuals_hour_test,
+    )
+    logger.info("Saved baseline comparison figure -> %s", fig_baseline)
+    logger.info("Saved ablation trace figure -> %s", fig_ablation_trace)
+
+    viz_train.save_checkpoint(
+        path=cfg.paths.regression_tables_dir.parent / "regression" / "models" / "ridge_checkpoint.npz",
+        fit=fit_final,
+        selected_features=abl_result.features,
+        lam=abl_result.lam,
+    )
+    logger.info("Saved ridge model checkpoint.")

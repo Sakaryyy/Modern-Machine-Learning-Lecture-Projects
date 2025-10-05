@@ -25,8 +25,12 @@ class Paths:
     processed_dir: Path
     eda_figures_dir: Path
     model_figures_dir: Path
+    regression_figures_dir: Path
+    classification_figures_dir: Path
     eda_tables_dir: Path
     model_tables_dir: Path
+    regression_tables_dir: Path
+    classification_tables_dir: Path
 
     def ensure_exists(self) -> None:
         """
@@ -35,12 +39,16 @@ class Paths:
         This function is safe to call multiple times.
         """
         for p in (
-                self.raw_dir,
-                self.processed_dir,
-                self.eda_figures_dir,
-                self.eda_tables_dir,
-                self.model_figures_dir,
-                self.model_tables_dir,
+            self.raw_dir,
+            self.processed_dir,
+            self.eda_figures_dir,
+            self.eda_tables_dir,
+            self.model_figures_dir,
+            self.regression_figures_dir,
+            self.classification_figures_dir,
+            self.model_tables_dir,
+            self.regression_tables_dir,
+            self.classification_tables_dir,
         ):
             p.mkdir(parents=True, exist_ok=True)
 
@@ -88,20 +96,20 @@ class FeatureConfig:
         nonlinear terms like atemp^2, atemp^3, and so on, depending on the builder.
     """
     # Hour encodings
-    add_hour_cyclical: bool = True
-    hour_fourier_harmonics: int = 3  # if >1, uses hour_fourier_step with this many harmonics
-    add_hour_onehot: bool = True
+    add_hour_cyclical: bool = False
+    hour_fourier_harmonics: int = 1  # if >1, uses hour_fourier_step with this many harmonics
+    add_hour_onehot: bool = False
     onehot_drop_first: bool = True
 
     # Interactions
-    add_hour_interactions_with_atemp: bool = True
+    add_hour_interactions_with_atemp: bool = False
 
     # Weather / calendar scalars
     use_atemp: bool = True
     use_temp: bool = False
-    use_workingday: bool = True
-    use_weekday_onehot: bool = True
-    use_month_onehot: bool = True
+    use_workingday: bool = False
+    use_weekday_onehot: bool = False
+    use_month_onehot: bool = False
     use_humidity: bool = False
     use_windspeed: bool = False
     use_season_onehot: bool = True
@@ -109,7 +117,7 @@ class FeatureConfig:
     use_holiday: bool = False
     use_weathersit_onehot: bool = True
     weathersit_drop_first: bool = True
-    poly_temp_degree: int = 4
+    poly_temp_degree: int = 1
 
 @dataclass(frozen=True)
 class ExperimentConfig:
@@ -156,7 +164,11 @@ class ExperimentConfig:
             processed_dir=root / "data" / "processed",
             eda_figures_dir=root / "outputs" / "figures" / "eda",
             model_figures_dir=root / "outputs" / "figures" / "model",
+            regression_figures_dir=root / "outputs" / "figures" / "model" / "regression",
+            classification_figures_dir=root / "outputs" / "figures" / "classification",
             eda_tables_dir=root / "outputs" / "tables" / "eda",
-            model_tables_dir=root / "outputs" / "tables" / "model"
+            model_tables_dir=root / "outputs" / "tables" / "model",
+            regression_tables_dir=root / "outputs" / "tables" / "regression",
+            classification_tables_dir=root / "outputs" / "tables" / "classification",
         )
         return ExperimentConfig(paths=paths)

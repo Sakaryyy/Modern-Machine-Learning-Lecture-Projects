@@ -195,7 +195,12 @@ def plot_ablation_trace_table(df_trace: pd.DataFrame, out_path: Path) -> Path:
     return out_path
 
 
-def plot_residuals_by_hour(df_preds: pd.DataFrame, out_path: Path) -> Path:
+def plot_residuals_by_hour(
+    df_preds: pd.DataFrame,
+    out_path: Path,
+    *,
+    split: str = "test",
+) -> Path:
     """
     Plot mean residual by hour-of-day with 1 std error bars.
 
@@ -206,6 +211,8 @@ def plot_residuals_by_hour(df_preds: pd.DataFrame, out_path: Path) -> Path:
         is present, it will be used instead of deriving hour from the index.
     out_path : pathlib.Path
         Where to write the PNG.
+    split : str, default "test"
+        Split name used for annotation in the plot title.
 
     Returns
     -------
@@ -220,7 +227,7 @@ def plot_residuals_by_hour(df_preds: pd.DataFrame, out_path: Path) -> Path:
 
     fig, ax = plt.subplots(figsize=(8, 4))
     ax.errorbar(tmp.index.values, tmp["mean"].values, yerr=tmp["stderr"].values, fmt="o-")
-    ax.set_title("Residuals by hour-of-day (test)")
+    ax.set_title(f"Residuals by hour-of-day ({split})")
     ax.set_xlabel("hour")
     ax.set_ylabel("mean residual ± 1 stderr")
     ax.axhline(0.0)
@@ -275,8 +282,12 @@ def predictions_table(
     y_hat: Array,
     y_hat_mean: Array,
     y_hat_hod: Array,
+    *,
+    split: str,
 ) -> pd.DataFrame:
-    return pd.DataFrame(
+    """Return a table with predictions for a particular data split."""
+
+    df = pd.DataFrame(
         {
             "y_true": np.asarray(y_true),
             "y_hat": np.asarray(y_hat),
@@ -285,9 +296,17 @@ def predictions_table(
         },
         index=index,
     )
+    df.index.name = "timestamp"
+    df["split"] = split
+    return df
 
 
-def plot_parity(df_preds: pd.DataFrame, out_path: Path) -> Path:
+def plot_parity(
+        df_preds: pd.DataFrame,
+        out_path: Path,
+        *,
+        split: str = "test"
+) -> Path:
     ensure_dir(out_path.parent)
     fig, ax = plt.subplots(figsize=(6, 6))
     sns.scatterplot(data=df_preds, x="y_true", y="y_hat", s=12, alpha=0.6, ax=ax)
@@ -296,41 +315,56 @@ def plot_parity(df_preds: pd.DataFrame, out_path: Path) -> Path:
         max(df_preds["y_true"].max(), df_preds["y_hat"].max()),
     ]
     ax.plot(lims, lims)
-    ax.set_title("Parity plot (test)")
+    ax.set_title(f"Parity plot ({split})")
     ax.set_xlabel("true cnt")
     ax.set_ylabel("predicted cnt")
     return save_figure(fig, out_path)
 
 
-def plot_residual_hist(df_preds: pd.DataFrame, out_path: Path) -> Path:
+def plot_residual_hist(
+        df_preds: pd.DataFrame,
+        out_path: Path,
+        *,
+        split: str = "test"
+) -> Path:
     ensure_dir(out_path.parent)
     fig, ax = plt.subplots(figsize=(7, 4))
     residuals = df_preds["y_true"] - df_preds["y_hat"]
     sns.histplot(residuals, bins=40, ax=ax)
-    ax.set_title("Residual histogram (test)")
+    ax.set_title(f"Residual histogram ({split})")
     ax.set_xlabel("residual = y_true - y_hat")
     ax.set_ylabel("count")
     return save_figure(fig, out_path)
 
 
-def plot_residual_vs_pred(df_preds: pd.DataFrame, out_path: Path) -> Path:
+def plot_residual_vs_pred(
+    df_preds: pd.DataFrame,
+    out_path: Path,
+    *,
+    split: str = "test",
+) -> Path:
     ensure_dir(out_path.parent)
     fig, ax = plt.subplots(figsize=(7, 4))
     residuals = df_preds["y_true"] - df_preds["y_hat"]
     sns.scatterplot(x=df_preds["y_hat"], y=residuals, s=12, alpha=0.6, ax=ax)
     ax.axhline(0.0)
-    ax.set_title("Residuals vs predictions (test)")
+    ax.set_title(f"Residuals vs predictions ({split})")
     ax.set_xlabel("predicted cnt")
     ax.set_ylabel("residual")
     return save_figure(fig, out_path)
 
 
-def plot_timeseries_overlay(df_preds: pd.DataFrame, out_path: Path) -> Path:
+def plot_timeseries_overlay(
+    df_preds: pd.DataFrame,
+    out_path: Path,
+    *,
+    split: str = "test",
+) -> Path:
     ensure_dir(out_path.parent)
     fig, ax = plt.subplots(figsize=(10, 4))
     df_preds["y_true"].plot(ax=ax, label="true", linewidth=1.0)
     df_preds["y_hat"].plot(ax=ax, label="ridge", linewidth=1.0)
-    ax.set_title("Test time series: true vs predicted")
+    ax.set_title(f"{split.capitalize()} time series: true vs predicted")
     ax.set_xlabel("time")
     ax.set_ylabel("cnt")
     ax.legend(loc="best")
