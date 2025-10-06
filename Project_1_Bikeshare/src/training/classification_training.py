@@ -447,13 +447,18 @@ def run_classification(
     )
 
     logger.info(
-        "Train metrics: acc=%.4f err=%.4f logloss=%.4f | Validation acc=%.4f err=%.4f logloss=%.4f",
+        (
+            "Train metrics: acc=%.4f err=%.4f logloss=%.4f mi=%.4f | "
+            "Validation acc=%.4f err=%.4f logloss=%.4f mi=%.4f"
+        ),
         metrics_tr.accuracy,
         metrics_tr.misclassification,
         metrics_tr.log_loss,
+        metrics_tr.mutual_information,
         metrics_va.accuracy,
         metrics_va.misclassification,
         metrics_va.log_loss,
+        metrics_va.mutual_information,
     )
 
     conf_mat_validation = confusion_matrix(y_va, pred_va, n_classes=n_classes)
@@ -550,12 +555,17 @@ def run_classification(
     )
 
     logger.info(
-        "Test metrics: acc=%.4f err=%.4f logloss=%.4f | Blind acc=%.4f err=%.4f",
+        (
+            "Test metrics: acc=%.4f err=%.4f logloss=%.4f mi=%.4f | "
+            "Blind acc=%.4f err=%.4f mi=%.4f"
+        ),
         metrics_te.accuracy,
         metrics_te.misclassification,
         metrics_te.log_loss,
+        metrics_te.mutual_information,
         baseline_metrics.accuracy,
         baseline_metrics.misclassification,
+        baseline_metrics.mutual_information,
     )
 
     conf_mat_test = confusion_matrix(y_te, pred_te, n_classes=n_classes)
