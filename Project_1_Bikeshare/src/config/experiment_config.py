@@ -1,7 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import json
+import os
+from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import Any, Mapping
+
+import yaml
 
 
 @dataclass(frozen=True)
@@ -86,11 +91,11 @@ class FeatureConfig:
         Include wind speed as a numeric feature.
     add_hour_cyclical : bool
         Include hour-of-day cyclical encoding (sin and cos).
-    use_season : bool
+    use_season_onehot : bool
         Include season categorical feature mapping. NotImplemented yet.
     use_holiday : bool
         Include holiday indicator. NotImplemented yet.
-    use_weathersit : bool
+    use_weathersit_onehot : bool
         Include weather situation category. NotImplemented yet.
     poly_temp_degree : int
         Maximum polynomial degree for temperature features. Values >= 2 introduce
@@ -134,42 +139,135 @@ class ExperimentConfig:
     features : FeatureConfig
         Feature toggle configuration.
 
-    Methods
-    -------
-    default() -> ExperimentConfig
-        Construct a configuration using a project-root inferred from this file's
-        location. The resulting object does not create directories automatically.
-        Call `cfg.paths.ensure_exists()` before writing outputs if needed.
     """
     paths: Paths
     splits: Splits = field(default_factory=Splits)
     features: FeatureConfig = field(default_factory=FeatureConfig)
 
     @staticmethod
-    def default() -> "ExperimentConfig":
-        """
-        Build an ExperimentConfig anchored at the inferred project root.
+    def _inferred_root() -> Path:
+        """Return the repository root inferred from this module's location."""
+        return Path(__file__).resolve().parents[2]
 
-        The root is computed as two levels above this file:
-        src/config/experiment_config.py  ->  project root at parents[2].
+    @staticmethod
+    def _default_paths(root: Path) -> Paths:
+        """Create the default directory layout relative to ``root``."""
 
-        Returns
-        -------
-        ExperimentConfig
-            A configuration with reasonable default paths under the project root.
-        """
-        root = Path(__file__).resolve().parents[2]  # .../Project_1_Bikeshare
-        paths = Paths(
+        return Paths(
             root=root,
             raw_dir=root / "data" / "raw",
             processed_dir=root / "data" / "processed",
             eda_figures_dir=root / "outputs" / "figures" / "eda",
             model_figures_dir=root / "outputs" / "figures" / "model",
             regression_figures_dir=root / "outputs" / "figures" / "model" / "regression",
-            classification_figures_dir=root / "outputs" / "figures" / "model" / "classification",
+            classification_figures_dir=root
+                                       / "outputs"
+                                       / "figures"
+                                       / "model"
+                                       / "classification",
             eda_tables_dir=root / "outputs" / "tables" / "eda",
             model_tables_dir=root / "outputs" / "tables" / "model",
-            regression_tables_dir=root / "outputs" / "tables" / "model" / "regression",
-            classification_tables_dir=root / "outputs" / "tables" / "model" / "classification",
+            regression_tables_dir=root
+                                  / "outputs"
+                                  / "tables"
+                                  / "model"
+                                  / "regression",
+            classification_tables_dir=root
+                                      / "outputs"
+                                      / "tables"
+                                      / "model"
+                                      / "classification",
         )
-        return ExperimentConfig(paths=paths)
+
+    @staticmethod
+    def default() -> "ExperimentConfig":
+        """
+        Build a class `ExperimentConfig` anchored at the inferred project root.
+
+        The loader first looks for ``config/experiment.yaml`` under the project
+        root. When present, the YAML content is parsed to override the defaults.
+        """
+
+        env_path = os.environ.get("EXPERIMENT_CONFIG")
+        if env_path:
+            return ExperimentConfig.from_file(Path(env_path).expanduser())
+
+        root = ExperimentConfig._inferred_root()
+        config_path = root / "config" / "experiment.yaml"
+        if config_path.exists():
+            return ExperimentConfig.from_file(config_path)
+        return ExperimentConfig(paths=ExperimentConfig._default_paths(root))
+
+    @staticmethod
+    def from_file(path: Path) -> "ExperimentConfig":
+        """Load configuration from a YAML or JSON file."""
+
+        if not path.exists():
+            raise FileNotFoundError(f"Configuration file not found: {path}")
+
+        suffix = path.suffix.lower()
+        text = path.read_text()
+        if suffix in {".yaml", ".yml"}:
+            data = yaml.safe_load(text) or {}
+        elif suffix == ".json":
+            data = json.loads(text)
+        else:
+            raise ValueError(
+                f"Unsupported configuration format '{suffix}'. Use .yaml, .yml, or .json."
+            )
+
+        if not isinstance(data, Mapping):
+            raise ValueError("Configuration file must define a mapping at the top level.")
+
+        base_root = path.resolve().parents[1] if len(path.parents) >= 2 else path.resolve().parent
+        paths_cfg = data.get("paths", {})
+        root = Path(paths_cfg.get("root", base_root))
+        if not root.is_absolute():
+            root = base_root / root
+
+        def _resolve_path(key: str, default: Path) -> Path:
+            raw_value = paths_cfg.get(key)
+            if raw_value is None:
+                return default
+            candidate = Path(raw_value)
+            return candidate if candidate.is_absolute() else root / candidate
+
+        default_paths = ExperimentConfig._default_paths(root)
+        paths = Paths(
+            root=root,
+            raw_dir=_resolve_path("raw_dir", default_paths.raw_dir),
+            processed_dir=_resolve_path("processed_dir", default_paths.processed_dir),
+            eda_figures_dir=_resolve_path("eda_figures_dir", default_paths.eda_figures_dir),
+            model_figures_dir=_resolve_path("model_figures_dir", default_paths.model_figures_dir),
+            regression_figures_dir=_resolve_path(
+                "regression_figures_dir", default_paths.regression_figures_dir
+            ),
+            classification_figures_dir=_resolve_path(
+                "classification_figures_dir", default_paths.classification_figures_dir
+            ),
+            eda_tables_dir=_resolve_path("eda_tables_dir", default_paths.eda_tables_dir),
+            model_tables_dir=_resolve_path("model_tables_dir", default_paths.model_tables_dir),
+            regression_tables_dir=_resolve_path(
+                "regression_tables_dir", default_paths.regression_tables_dir
+            ),
+            classification_tables_dir=_resolve_path(
+                "classification_tables_dir", default_paths.classification_tables_dir
+            ),
+        )
+
+        splits_cfg = data.get("splits", {})
+        splits = replace(
+            Splits(),
+            train_end=splits_cfg.get("train_end", Splits.train_end),
+            validation_end=splits_cfg.get("validation_end", Splits.validation_end),
+        )
+
+        features_cfg = data.get("features", {})
+        feature_defaults = FeatureConfig()
+        feature_kwargs: dict[str, Any] = {}
+        for field_name in feature_defaults.__dataclass_fields__:
+            if field_name in features_cfg:
+                feature_kwargs[field_name] = features_cfg[field_name]
+        features = replace(feature_defaults, **feature_kwargs)
+
+        return ExperimentConfig(paths=paths, splits=splits, features=features)

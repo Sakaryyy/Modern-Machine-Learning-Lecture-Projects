@@ -1,0 +1,36 @@
+# All paths are interpreted relative to this repository unless they are absolute.
+paths:
+  raw_dir: data/raw
+  processed_dir: data/processed
+  eda_figures_dir: outputs/figures/eda
+  model_figures_dir: outputs/figures/model
+  regression_figures_dir: outputs/figures/model/regression
+  classification_figures_dir: outputs/figures/model/classification
+  eda_tables_dir: outputs/tables/eda
+  model_tables_dir: outputs/tables/model
+  regression_tables_dir: outputs/tables/model/regression
+  classification_tables_dir: outputs/tables/model/classification
+
+splits:
+  train_end: "2012-06-30"
+  validation_end: "2012-10-31"
+
+features:
+  add_hour_cyclical: true
+  hour_fourier_harmonics: 2
+  add_hour_onehot: true
+  onehot_drop_first: true
+  add_hour_interactions_with_atemp: false
+  use_atemp: true
+  use_temp: false
+  use_workingday: false
+  use_weekday_onehot: false
+  use_month_onehot: false
+  use_humidity: false
+  use_windspeed: false
+  use_season_onehot: true
+  season_drop_first: true
+  use_holiday: false
+  use_weathersit_onehot: true
+  weathersit_drop_first: true
+  poly_temp_degree: 2

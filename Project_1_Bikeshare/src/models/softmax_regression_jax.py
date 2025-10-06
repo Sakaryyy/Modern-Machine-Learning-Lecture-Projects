@@ -126,7 +126,7 @@ class SoftmaxRegression:
         FittedSoftmaxRegression
             Trained parameters together with optimisation diagnostics. When
             ``record_history`` is True the returned object contains a trajectory
-            of :class:`SoftmaxTrainingRecord` entries that can be visualised to
+            of class `SoftmaxTrainingRecord` entries that can be visualised to
             confirm convergence.
         """
 
