@@ -17,7 +17,7 @@ splits:
 
 features:
   add_hour_cyclical: true
-  hour_fourier_harmonics: 2
+  hour_fourier_harmonics: 3
   add_hour_onehot: true
   onehot_drop_first: true
   add_hour_interactions_with_atemp: false
@@ -25,12 +25,12 @@ features:
   use_temp: false
   use_workingday: false
   use_weekday_onehot: false
-  use_month_onehot: false
+  use_month_onehot: true
   use_humidity: false
   use_windspeed: false
-  use_season_onehot: true
+  use_season_onehot: false
   season_drop_first: true
   use_holiday: false
   use_weathersit_onehot: true
-  weathersit_drop_first: true
-  poly_temp_degree: 2
+  weathersit_drop_first: false
+  poly_temp_degree: 3

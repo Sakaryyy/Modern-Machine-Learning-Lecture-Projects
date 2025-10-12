@@ -108,14 +108,6 @@ def _build_classification_groups(
             )
         )
 
-    if "yr" in available_columns:
-        groups.append(
-            (
-                ["yr"],
-                FeaturePipeline(steps=[numeric_step("yr", dtype=dtype)], dtype=dtype, device=device),
-            )
-        )
-
     if feats_cfg.use_workingday and "workingday" in available_columns:
         groups.append(
             (

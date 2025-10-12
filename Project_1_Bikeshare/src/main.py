@@ -88,7 +88,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--epsilon",
         type=float,
-        default=0.02,
+        default=0.00001,
         help="Relative tolerance against best validation RMSE to pick a minimal feature set.",
     )
     parser.add_argument(
@@ -101,13 +101,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--classify-learning-rate",
         type=float,
-        default=0.1,
+        default=1.0,
         help="Learning rate for gradient descent in softmax regression.",
     )
     parser.add_argument(
         "--classify-max-iter",
         type=int,
-        default=1000,
+        default=5000,
         help="Maximum number of gradient steps for classification mode.",
     )
     parser.add_argument(

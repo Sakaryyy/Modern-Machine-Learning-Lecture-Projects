@@ -80,7 +80,7 @@ def plot_training_history(history: pd.DataFrame, out_path: Path) -> Path:
     axes[1].set_ylabel("Accuracy")
 
     handles, labels = axes[0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc="upper center", ncols=len(labels))
+    fig.legend(handles, labels, ncols=len(labels))
     for ax in axes:
         leg = ax.get_legend()
         if leg is not None:
