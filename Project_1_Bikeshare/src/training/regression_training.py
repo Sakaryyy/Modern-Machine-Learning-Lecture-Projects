@@ -39,6 +39,17 @@ logger = logging.getLogger(__name__)
 YMode = Literal["none", "log1p", "sqrt"]
 
 
+def _finite_stats(name: str, x) -> None:
+    import jax.numpy as jnp
+    arr = jnp.asarray(x)
+    n = arr.size
+    n_nan = int(jnp.isnan(arr).sum())
+    n_inf = int(jnp.isinf(arr).sum())
+    amin = float(jnp.nanmin(arr)) if n_nan < n else float("nan")
+    amax = float(jnp.nanmax(arr)) if n_nan < n else float("nan")
+    print(f"[FINITE] {name}: shape={arr.shape}, nan={n_nan}, inf={n_inf}, min={amin:.6g}, max={amax:.6g}")
+
+
 def build_candidate_groups(
         cfg_feats: FeatureConfig,
 ) -> List[Tuple[List[str], FeaturePipeline]]:
@@ -285,7 +296,7 @@ def run_regression(
         lam_grid=lam_grid,
         epsilon=epsilon,
         y_transform=y_transform,
-        lam_floor=1e-8,
+        lam_floor=1e-4,
         record_trace=True,
         logger=logger,
         can_select=can_select_group

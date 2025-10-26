@@ -9,6 +9,11 @@ Array = jax.Array
 YMode = Literal["none", "log1p", "sqrt"]
 
 
+def _max_log_for_dtype(dtype: jnp.dtype) -> float:
+    # Rough overflow thresholds for exp in float32/float64.
+    return 88.7 if dtype == jnp.float32 else 709.0
+
+
 def forward_transform(y: Array, mode: YMode) -> Array:
     """
     Transform the target for regression.
@@ -56,8 +61,13 @@ def inverse_transform(y_hat: Array, mode: YMode, smear: float | None = None) -> 
     if mode == "none":
         return y_hat
     if mode == "log1p":
-        base = jnp.expm1(y_hat)
-        return base * (smear if smear is not None else 1.0)
+        # Clamp to avoid exp overflow in float32/64
+        max_log = _max_log_for_dtype(y_hat.dtype)
+        y_hat_c = jnp.minimum(y_hat, max_log - 2.0)  # safety margin
+        base = jnp.expm1(y_hat_c)
+        mul = (smear if smear is not None else 1.0)
+        out = base * mul
+        return out
     if mode == "sqrt":
         return jnp.square(jnp.maximum(y_hat, 0.0))
     raise ValueError(f"Unknown mode: {mode}")
@@ -81,4 +91,9 @@ def smearing_factor(residuals_in_log_space: Array) -> float:
     float
         Estimated E[exp(e)].
     """
-    return float(jnp.mean(jnp.exp(residuals_in_log_space)))
+    e = residuals_in_log_space
+    m = jnp.max(e)
+    # If all residuals are -inf (shouldn't happen), fall back to 1.0
+    val = jnp.mean(jnp.exp(e - m)) * jnp.exp(m)
+    val = jnp.where(jnp.isfinite(val), val, 1.0)
+    return float(val)

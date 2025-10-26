@@ -196,24 +196,54 @@ class RidgeClosedForm:
             Weight vector w with shape (m,).
         """
         n, m = X.shape
-        XtX = X.T @ X
-        diag = (2.0 * lam + jitter) * jnp.ones((m,), dtype=self.dtype)
-        A = XtX + jnp.diag(diag)
-        Xty = X.T @ y
+        lam_eff = lam
+        jitter_eff = jitter
 
-        if self.solver in ("cholesky", "auto"):
+        for attempt in range(3):
+            # Try Cholesky
+            XtX = X.T @ X
+            A = XtX + jnp.diag((2.0 * lam_eff + jitter_eff) * jnp.ones((m,), dtype=self.dtype))
+            Xty = X.T @ y
             try:
                 L = jnp.linalg.cholesky(A)
-                # Solve A w = Xty via two triangular solves.
                 w = jnp.linalg.solve(L.T, jnp.linalg.solve(L, Xty))
-                return w
+                if jnp.isfinite(w).all():
+                    return w
             except Exception:
-                if self.solver == "cholesky":
-                    raise
+                pass  # fall through
 
-        # Fallback generic solver
-        w = jnp.linalg.solve(A, Xty)
-        return w
+            # Try generic solve
+            try:
+                w = jnp.linalg.solve(A, Xty)
+                if jnp.isfinite(w).all():
+                    return w
+            except Exception:
+                pass
+
+            # Try SVD ridge (most stable)
+            try:
+                w = self._ridge_via_svd(X, y, lam_eff)
+                if jnp.isfinite(w).all():
+                    return w
+            except Exception:
+                pass
+
+            # Escalate regularisation and jitter, then retry
+            lam_eff = max(lam_eff * 10.0, lam_eff + 1e-3)
+            jitter_eff = max(jitter_eff * 10.0, 1e-6)
+
+        # Last resort: raise with a clear message
+        raise ValueError(
+            f"Ridge solve produced non-finite coefficients after escalations; "
+            f"cond(X) likely huge. Tried lam up to {lam_eff:.3g}."
+        )
+
+    def _ridge_via_svd(self, X: Array, y: Array, lam: float) -> Array:
+        # X = U Σ V^T ; ridge: w = V diag( Σ / (Σ^2 + 2λ) ) U^T y
+        U, s, Vt = jnp.linalg.svd(X, full_matrices=False)
+        denom = s * s + 2.0 * lam
+        coeff = s / denom
+        return Vt.T @ (coeff * (U.T @ y))
 
     def _validate_design_targets(self, Phi: Array, y: Array) -> Tuple[int, int]:
         if Phi.ndim != 2:

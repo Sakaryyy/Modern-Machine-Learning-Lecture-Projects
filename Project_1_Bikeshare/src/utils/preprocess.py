@@ -10,11 +10,10 @@ Array = jax.Array
 
 def standardize_design(
     X_tr: Array,
-    X_val: Array,
+        X_va: Array,
     X_te: Array,
     *,
-    eps: float = 1e-8,
-    preserve_mask: Optional[Array] = None,
+        std_floor: float = 1e-6,
 ) -> Tuple[Array, Array, Array, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """
     Standardize non-binary columns by training mean/std and leave binary columns unchanged.
@@ -26,49 +25,46 @@ def standardize_design(
 
     Parameters
     ----------
-    X_tr, X_val, X_te : jax.Array
+    X_tr, X_va, X_te : jax.Array
         Design matrices with identical number of columns.
-    eps : float
+    std_floor : float
         Numerical floor added to std to avoid division by zero.
-    preserve_mask : jax.Array of bool, optional
-        Boolean mask with shape (n_features,) marking columns that should remain
-        untouched (mean 0, std 1) during scaling. This is useful for columns that
-        have already been normalized to lie within a specific range (like [0, 1])
-        and should not be z-scored. When provided, the mask is combined with the
-        automatically detected binary mask so that any column marked True is left
-        unchanged.
 
     Returns
     -------
     Xz_tr, Xz_val, Xz_te : jax.Array
         Standardized designs.
-    mu, sd, preserved : jax.Array
+    mu, sd, is_binary : jax.Array
         Training means, training stds (with eps), and a boolean mask indicating
         which columns were preserved (either because they were detected as
         binary or because they were supplied via `preserve_mask`).
     """
     if X_tr.shape[1] == 0:
-        zero = jnp.array([], dtype=X_tr.dtype)
-        return X_tr, X_val, X_te, zero, zero, zero
+        m = X_tr.shape[1]
+        zero = jnp.zeros((m,), dtype=X_tr.dtype)
+        return X_tr, X_va, X_te, zero, jnp.ones((m,), dtype=X_tr.dtype), jnp.ones((m,), dtype=bool)
 
-    is_binary = jnp.all((X_tr == 0.0) | (X_tr == 1.0), axis=0)
-    if preserve_mask is not None:
-        preserve_mask = jnp.asarray(preserve_mask, dtype=bool)
-        if preserve_mask.shape != (X_tr.shape[1],):
-            raise ValueError(
-                "preserve_mask must have shape (n_features,) matching the design matrices"
-            )
-        preserved = jnp.logical_or(is_binary, preserve_mask)
-    else:
-        preserved = is_binary
+    mu = jnp.mean(X_tr, axis=0)
+    sd = jnp.std(X_tr, axis=0, ddof=0)
 
-    mu = jnp.where(preserved, 0.0, jnp.mean(X_tr, axis=0))
-    sd = jnp.where(preserved, 1.0, jnp.std(X_tr, axis=0) + eps)
+    # Identify binary columns on train split
+    minv = jnp.min(X_tr, axis=0)
+    maxv = jnp.max(X_tr, axis=0)
+    is_binary = jnp.logical_and(minv >= 0.0,
+                                jnp.logical_and(maxv <= 1.0, jnp.all(jnp.isin(X_tr, jnp.array([0.0, 1.0])), axis=0)))
 
-    def zscore(X: Array) -> Array:
-        return (X - mu) / sd
+    # Near-constant columns (could be artifacts)
+    near_const = sd < std_floor
 
-    return zscore(X_tr), zscore(X_val), zscore(X_te), mu, sd, preserved
+    scale = jnp.where(jnp.logical_or(is_binary, near_const), 1.0, jnp.maximum(sd, std_floor))
+
+    def _z(x): return (x - mu) / scale
+
+    X_tr_s = _z(X_tr)
+    X_va_s = _z(X_va)
+    X_te_s = _z(X_te)
+
+    return X_tr_s, X_va_s, X_te_s, mu, sd, is_binary
 
 
 def can_select_group(selected_cols: set[str], candidate_group: list[str]) -> bool:

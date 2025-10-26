@@ -82,7 +82,7 @@ def parse_args() -> argparse.Namespace:
         "--lam-grid",
         type=float,
         nargs="+",
-        default=[1e-6,9e-5,8e-5,7e-5,6e-5,5e-5,4e-5,3e-5,2e-5,1e-5,8e-4,6e-4,4e-4,2e-4,1e-4,1e-3,1e-2,1e-1,1,1e1,1e2,1e3],
+        default=[1e-4, 1e-3, 1e-2, 1e-1, 1, 1e1, 1e2, 1e3],
         help="Grid of ridge lambda values for selection on the validation set.",
     )
     parser.add_argument(
