@@ -103,15 +103,10 @@ def forward_ablation_classification(
             X_tr_raw, trial_cols = _build_design(trial_pipes, df_tr, dtype=dtype)
             X_val_raw, _ = _build_design(trial_pipes, df_val, dtype=dtype)
 
-            preserve_mask = None
-            if preserve_columns:
-                preserve_mask = jnp.array([col in preserve_columns for col in trial_cols], dtype=bool)
-
             X_tr_std, X_val_std, _, _, _, _ = standardize_design(
                 X_tr_raw,
                 X_val_raw,
                 X_val_raw,
-                preserve_mask=preserve_mask,
             )
 
             for lam in reg_grid:

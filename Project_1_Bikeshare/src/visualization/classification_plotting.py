@@ -201,3 +201,54 @@ def plot_true_class_probability(prob_df: pd.DataFrame, out_path: Path) -> Path:
             ha="right", va="top", fontsize=8,
             bbox=dict(facecolor="white", alpha=0.8, edgecolor="none"))
     return save_figure(fig, out_path)
+
+
+def plot_mutual_information(mi_df: pd.DataFrame, out_path: Path) -> Path:
+    """
+    Plot a bar chart of mutual information across splits.
+
+    Parameters
+    ----------
+    mi_df : pandas.DataFrame
+        DataFrame with columns 'split' and 'mutual_information_nats', containing
+        the estimated mutual information values (in nats) for each dataset split.
+    out_path : pathlib.Path
+        Location to save the resulting plot.
+
+    Returns
+    -------
+    pathlib.Path
+        Path of the saved figure.
+    """
+    ensure_dir(out_path.parent)
+    fig, ax = plt.subplots(figsize=(6, 4))
+
+    # Sort splits for a consistent order if present
+    order = ["train", "validation", "train+validation", "test", "blind_uniform"]
+    if set(mi_df["split"].unique()).issubset(set(order)):
+        mi_df = mi_df.set_index("split").reindex(order).dropna().reset_index()
+
+    # Create the bar plot
+    sns.barplot(data=mi_df, x="split", y="mutual_information_nats", ax=ax)
+    ax.set_title("Mutual information by split")
+    ax.set_xlabel("Split")
+    ax.set_ylabel("Mutual information (nats)")
+
+    # Annotate each bar with its numeric value
+    for p in ax.patches:
+        height = p.get_height()
+        if pd.notnull(height):
+            ax.annotate(
+                f"{height:.3g}",
+                (p.get_x() + p.get_width() / 2, height),
+                ha="center",
+                va="bottom",
+                fontsize=8,
+                xytext=(0, 3),
+                textcoords="offset points",
+            )
+
+    fig.tight_layout()
+    save_figure(fig, out_path)
+    plt.close(fig)
+    return out_path

@@ -382,8 +382,7 @@ def run_classification(
     X_tr, X_va, X_te, mu, sd, preserved = standardize_design(
         X_tr,
         X_va,
-        X_te,
-        preserve_mask=preserve_mask,
+        X_te
     )
     logger.info(
         "Standardization preserved %d columns and scaled %d columns.",
@@ -594,6 +593,16 @@ def run_classification(
         [{"model": "uniform_blind", **baseline_metrics.as_dict()}]
     )
 
+    mi_df = pd.DataFrame(
+        [
+            {"split": "train", "mutual_information_nats": float(metrics_tr.mutual_information)},
+            {"split": "validation", "mutual_information_nats": float(metrics_va.mutual_information)},
+            {"split": "train+validation", "mutual_information_nats": float(metrics_trva.mutual_information)},
+            {"split": "test", "mutual_information_nats": float(metrics_te.mutual_information)},
+            {"split": "blind_uniform", "mutual_information_nats": float(baseline_metrics.mutual_information)},
+        ]
+    )
+
     per_hour_df = pd.concat(per_hour_frames, ignore_index=True)
     probability_df = pd.concat(probability_frames, ignore_index=True)
 
@@ -631,6 +640,7 @@ def run_classification(
             "training_history": history_df,
             "selected_features": selected_features_df,
             "standardization": scaling_df,
+            "mutual_information": mi_df,
         },
         summary_path,
     )
@@ -660,6 +670,9 @@ def run_classification(
 
     fig_probability = cfg.paths.classification_figures_dir / "classification_true_class_probability.png"
     viz_classif.plot_true_class_probability(probability_df, fig_probability)
+
+    fig_mi = cfg.paths.classification_figures_dir / "classification_mutual_information.png"
+    viz_classif.plot_mutual_information(mi_df, fig_mi)
 
     logger.info(
         "Classification figures saved: %s, %s, %s, %s, %s%s",
