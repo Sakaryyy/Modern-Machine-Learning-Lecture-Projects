@@ -380,7 +380,7 @@ class CLIApplication:
         experiments_parser.add_argument(
             "--model",
             type=str,
-            default="baseline",
+            default="cnn",
             help="Model architecture used as the starting point for experiments.",
         )
         experiments_parser.add_argument(
@@ -471,18 +471,21 @@ class CLIApplication:
         elif default_output is None:
             trainer_dict["output_dir"] = self._default_training_output_dir(args.model, args.data_dir)
 
-        if args.epochs:
-            trainer_dict["num_epochs"] = args.epochs
+        epochs_override = getattr(args, "epochs", None)
+        if epochs_override:
+            trainer_dict["num_epochs"] = epochs_override
         else:
             trainer_dict.setdefault("num_epochs", defaults.num_epochs)
 
-        if args.batch_size:
-            trainer_dict["batch_size"] = args.batch_size
+        batch_size_override = getattr(args, "batch_size", None)
+        if batch_size_override:
+            trainer_dict["batch_size"] = batch_size_override
         else:
             trainer_dict.setdefault("batch_size", defaults.batch_size)
 
-        if args.eval_batch_size:
-            trainer_dict["eval_batch_size"] = args.eval_batch_size
+        eval_batch_size_override = getattr(args, "eval_batch_size", None)
+        if eval_batch_size_override:
+            trainer_dict["eval_batch_size"] = eval_batch_size_override
         else:
             trainer_dict.setdefault("eval_batch_size", defaults.eval_batch_size)
 
@@ -491,18 +494,21 @@ class CLIApplication:
         trainer_dict["seed"] = args.random_seed
 
         optimizer_dict = dict(trainer_dict.get("optimizer", {}))
-        if args.optimizer is not None:
-            optimizer_dict["name"] = args.optimizer
+        optimizer_override = getattr(args, "optimizer", None)
+        if optimizer_override is not None:
+            optimizer_dict["name"] = optimizer_override
         optimizer_dict.setdefault("name", defaults.optimizer)
         optimizer_dict.setdefault("weight_decay", defaults.weight_decay)
         trainer_dict["optimizer"] = optimizer_dict
 
         scheduler_dict = dict(trainer_dict.get("scheduler", {}))
-        if args.scheduler is not None:
-            scheduler_dict["name"] = args.scheduler
+        scheduler_override = getattr(args, "scheduler", None)
+        if scheduler_override is not None:
+            scheduler_dict["name"] = scheduler_override
         scheduler_dict.setdefault("name", defaults.scheduler)
-        if args.learning_rate is not None:
-            scheduler_dict["learning_rate"] = args.learning_rate
+        learning_rate_override = getattr(args, "learning_rate", None)
+        if learning_rate_override is not None:
+            scheduler_dict["learning_rate"] = learning_rate_override
         scheduler_dict.setdefault("learning_rate", defaults.learning_rate)
         for key, value in defaults.scheduler_kwargs.items():
             scheduler_dict.setdefault(key, value)
