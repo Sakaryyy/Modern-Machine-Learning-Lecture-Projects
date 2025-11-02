@@ -15,6 +15,7 @@ import pandas as pd
 import yaml
 from flax import linen as nn
 from flax import serialization
+from flax.core import FrozenDict
 from flax.training import train_state
 
 from Project_2_Image_Classification.src.data_loading.data_load_and_save import DatasetSplit, PreparedDataset
@@ -155,6 +156,7 @@ class TrainingState(train_state.TrainState):
     """Extension of :class:`flax.training.train_state.TrainState` with RNG state."""
 
     dropout_rng: jax.Array | None = None
+    batch_stats: FrozenDict | None = None
 
     @classmethod
     def create(
@@ -223,12 +225,14 @@ class Trainer:
         example = jnp.asarray(train_split.images[:1])
         variables = self._model.init(init_rng, example, train=True)
         params = variables["params"]
+        batch_stats = variables.get("batch_stats")
 
         state = TrainingState.create(
             apply_fn=self._model.apply,
             params=params,
             tx=optimizer,
             dropout_rng=dropout_rng,
+            batch_stats=batch_stats,
         )
 
         history_records: List[Dict[str, float]] = []
@@ -359,18 +363,30 @@ class Trainer:
     def _build_train_step(self):
         loss_fn = self._loss_fn
 
-        def train_step(state: TrainingState, batch: Mapping[str, jnp.ndarray]) -> tuple[
-            TrainingState, Dict[str, float]]:
+        def train_step(state: TrainingState, batch: Mapping[str, jnp.ndarray]
+                       ) -> tuple[TrainingState, Dict[str, float]]:
             dropout_rng, new_dropout_rng = jax.random.split(state.dropout_rng)
 
             def loss_with_logits(params: Mapping[str, jnp.ndarray]) -> tuple[jnp.ndarray, jnp.ndarray]:
-                logits = state.apply_fn({"params": params}, batch["images"], train=True, rngs={"dropout": dropout_rng})
+                variables = {"params": params, "batch_stats": state.batch_stats}
+                logits, new_model_state = state.apply_fn(
+                    variables,
+                    batch["images"],
+                    train=True,
+                    rngs={"dropout": dropout_rng},
+                    mutable=["batch_stats"],
+                )
                 loss = loss_fn(logits, batch["labels"])
-                return loss, logits
+                return loss, (logits, new_model_state)
 
-            (loss, logits), grads = jax.value_and_grad(loss_with_logits, has_aux=True)(state.params)
+            (loss, (logits, new_model_state)), grads = jax.value_and_grad(
+                loss_with_logits, has_aux=True
+            )(state.params)
             state = state.apply_gradients(grads=grads)
-            state = state.replace(dropout_rng=new_dropout_rng)
+            state = state.replace(
+                dropout_rng=new_dropout_rng,
+                batch_stats=new_model_state["batch_stats"],
+            )
             metrics = self._compute_metrics(logits, batch["labels"], loss)
             return state, metrics
 
@@ -380,7 +396,8 @@ class Trainer:
         loss_fn = self._loss_fn
 
         def eval_step(state: TrainingState, batch: Mapping[str, jnp.ndarray]) -> Dict[str, float]:
-            logits = state.apply_fn({"params": state.params}, batch["images"], train=False)
+            variables = {"params": state.params, "batch_stats": state.batch_stats}
+            logits = state.apply_fn(variables, batch["images"], train=False, mutable=False)
             loss = loss_fn(logits, batch["labels"])
             return self._compute_metrics(logits, batch["labels"], loss)
 

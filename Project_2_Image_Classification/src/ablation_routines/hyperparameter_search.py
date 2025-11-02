@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import shutil
 from dataclasses import asdict, replace
 from datetime import datetime
@@ -42,9 +43,10 @@ class HyperparameterExperimentManager:
         self._dataset = dataset
         self._model_name = model_name
         self._model_builder = model_builder
-        self._base_model_config = asdict(base_model_config) if hasattr(base_model_config,
-                                                                       "__dataclass_fields__") else dict(
-            base_model_config)
+        if hasattr(base_model_config, "__dataclass_fields__"):
+            self._base_model_config = asdict(base_model_config)
+        else:
+            self._base_model_config = dict(base_model_config)
         self._base_trainer_config = base_trainer_config
         self._logger = get_logger(self.__class__.__name__)
 
@@ -58,6 +60,14 @@ class HyperparameterExperimentManager:
         metric_name = ablation_cfg.metric
         study_root = self._create_study_root(ablation_cfg.output_subdir)
         results: list[Dict[str, Any]] = []
+
+        self._logger.info(
+            "Running baseline configuration '%s' for %d repeat(s) before ablations.",
+            ablation_cfg.baseline_model,
+            ablation_cfg.repeats,
+        )
+        baseline_records = self._run_baseline(study_root, ablation_cfg.repeats, metric_name)
+        results.extend(baseline_records)
 
         for parameter, values in ablation_cfg.parameters.items():
             for value in values:
@@ -106,9 +116,9 @@ class HyperparameterExperimentManager:
         study_root = self._create_study_root(search_cfg.output_subdir)
         records: list[Dict[str, Any]] = []
 
-        for combination in search_cfg.iter_grid():
+        for index, combination in enumerate(search_cfg.iter_grid(), start=1):
             model_overrides, trainer_overrides = self._split_overrides(combination)
-            run_name = self._format_combination_name(combination)
+            run_name = self._format_combination_name(combination, index)
             self._logger.info("Hyper-parameter run %s", run_name)
             trainer_config = self._prepare_trainer_config(run_name, trainer_overrides, study_root, repeat_index=0)
             model, resolved_config = self._model_builder(self._combine_model_config(model_overrides))
@@ -178,20 +188,38 @@ class HyperparameterExperimentManager:
         scheduler = self._base_trainer_config.scheduler
         config = replace(self._base_trainer_config, output_dir=output_dir)
 
-        if "optimizer" in overrides:
-            optimizer = replace(optimizer, name=str(overrides["optimizer"]))
-        if "weight_decay" in overrides:
-            optimizer = replace(optimizer, weight_decay=float(overrides["weight_decay"]))
-        if "learning_rate" in overrides:
-            scheduler = replace(scheduler, learning_rate=float(overrides["learning_rate"]))
-        if "scheduler" in overrides:
-            scheduler = replace(scheduler, name=str(overrides["scheduler"]))
-        if "batch_size" in overrides:
-            config = replace(config, batch_size=int(overrides["batch_size"]))
-        if "num_epochs" in overrides:
-            config = replace(config, num_epochs=int(overrides["num_epochs"]))
+        optimizer_updates: Dict[str, Any] = {}
+        scheduler_updates: Dict[str, Any] = {}
+
+        for key, value in overrides.items():
+            if key == "optimizer":
+                optimizer_updates["name"] = str(value)
+            elif key in {"weight_decay", "momentum", "beta1", "beta2", "eps"}:
+                optimizer_updates[key] = float(value)
+            elif key in {"nesterov", "centered"}:
+                optimizer_updates[key] = bool(value)
+            elif key == "scheduler":
+                scheduler_updates["name"] = str(value)
+            elif key in {"learning_rate", "warmup_init_value", "decay_rate", "alpha", "end_learning_rate"}:
+                scheduler_updates[key] = float(value)
+            elif key in {"warmup_steps", "transition_steps"}:
+                scheduler_updates[key] = int(value)
+            elif key == "batch_size":
+                config = replace(config, batch_size=int(value))
+            elif key == "eval_batch_size":
+                config = replace(config, eval_batch_size=int(value))
+            elif key == "num_epochs":
+                config = replace(config, num_epochs=int(value))
+            elif key == "log_every":
+                config = replace(config, log_every=int(value))
+            elif key == "evaluate_on_test":
+                config = replace(config, evaluate_on_test=bool(value))
 
         seed = self._base_trainer_config.seed + repeat_index
+        if optimizer_updates:
+            optimizer = replace(optimizer, **optimizer_updates)
+        if scheduler_updates:
+            scheduler = replace(scheduler, **scheduler_updates)
         config = replace(config, optimizer=optimizer, scheduler=scheduler, seed=seed, output_dir=output_dir)
         return config
 
@@ -200,6 +228,34 @@ class HyperparameterExperimentManager:
         result = trainer.train(self._dataset)
         self._persist_model_definition(trainer_config.output_dir, resolved_config, trainer_config)
         return result
+
+    def _run_baseline(self, study_root: Path, repeats: int, metric_name: str) -> list[Dict[str, Any]]:
+        """Train the baseline configuration used for comparisons."""
+
+        baseline_records: list[Dict[str, Any]] = []
+        for repeat in range(repeats):
+            run_name = f"baseline_rep{repeat + 1}"
+            trainer_config = self._prepare_trainer_config(run_name, {}, study_root, repeat)
+            model, resolved_config = self._model_builder(self._combine_model_config({}))
+            result = self._train_model(model, trainer_config, resolved_config)
+            metric_value = self._extract_metric(result, metric_name)
+            self._logger.info(
+                "Baseline run %s completed with %s=%.4f",
+                run_name,
+                metric_name,
+                metric_value,
+            )
+            baseline_records.append(
+                {
+                    "parameter": "baseline",
+                    "value": "default",
+                    "repeat": repeat + 1,
+                    metric_name: metric_value,
+                    "output_dir": str(trainer_config.output_dir),
+                    "checkpoint_path": str(result.checkpoint_path),
+                }
+            )
+        return baseline_records
 
     def _persist_model_definition(self, output_dir: Path, model_config: Any, trainer_config: TrainerConfig) -> None:
         definition_path = output_dir / self.MODEL_DEFINITION_FILENAME
@@ -217,9 +273,28 @@ class HyperparameterExperimentManager:
     def _extract_metric(self, result, metric_name: str) -> float:
         metrics = result.best_validation_metrics or {}
         value = metrics.get(metric_name)
+
+        if value is None and metric_name.startswith("validation_"):
+            stripped = metric_name[len("validation_"):]
+            value = metrics.get(stripped)
+
+        if value is None and metric_name.startswith("test_"):
+            test_metrics = result.test_metrics or {}
+            stripped = metric_name[len("test_"):]
+            value = test_metrics.get(stripped)
+
+        if value is None and metric_name.startswith("train_"):
+            final_train = result.history.iloc[-1] if not result.history.empty else None
+            if final_train is not None and metric_name in final_train:
+                value = float(final_train[metric_name])
+
         if value is None:
-            self._logger.warning("Metric '%s' not found in best validation metrics. Falling back to NaN.", metric_name)
+            self._logger.warning(
+                "Metric '%s' not found in recorded results. Falling back to NaN.",
+                metric_name,
+            )
             return float("nan")
+
         return float(value)
 
     def _build_results_frames(
@@ -247,6 +322,22 @@ class HyperparameterExperimentManager:
         shutil.copy2(checkpoint_path, target)
         self._logger.info("Copied best %s checkpoint to %s", prefix, target)
 
-    def _format_combination_name(self, combination: Mapping[str, Any]) -> str:
-        fragments = [f"{key}-{str(value).replace('/', '_')}" for key, value in combination.items()]
-        return "_".join(fragments)
+    def _format_combination_name(self, combination: Mapping[str, Any], index: int) -> str:
+        fragments = []
+        for key, value in combination.items():
+            fragments.append(f"{key}-{self._slugify(value)}")
+        suffix = "__".join(fragments)
+        return f"combo{index:03d}_{suffix}" if suffix else f"combo{index:03d}"
+
+    @staticmethod
+    def _slugify(value: Any) -> str:
+        if isinstance(value, (int, float)):
+            return str(value).replace(".", "p")
+        if isinstance(value, bool):
+            return str(value).lower()
+        if isinstance(value, str):
+            cleaned = value.replace("/", "-")
+            return "".join(ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in cleaned)
+        serialized = yaml.safe_dump(value, sort_keys=True)
+        digest = hashlib.sha1(serialized.encode("utf-8")).hexdigest()[:10]
+        return f"hash-{digest}"

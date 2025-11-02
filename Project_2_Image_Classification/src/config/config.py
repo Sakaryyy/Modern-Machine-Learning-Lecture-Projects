@@ -55,7 +55,13 @@ class PathsConfig:
         """Create all directories if they do not exist already."""
 
         for path in (
-        self.data_dir, self.outputs_dir, self.configs_dir, self.models_dir, self.analysis_dir, self.figures_dir):
+                self.data_dir,
+                self.outputs_dir,
+                self.configs_dir,
+                self.models_dir,
+                self.analysis_dir,
+                self.figures_dir,
+        ):
             path.mkdir(parents=True, exist_ok=True)
 
 
@@ -120,8 +126,17 @@ class AblationStudyConfig:
         default_factory=lambda: {
             "hidden_units": [64, 128, 256, 512, 1024, 2048],
             "dropout_rate": [0.0, 0.1, 0.2, 0.3, 0.4, 0.5],
-            "optimizer": ["adamw", "sgd"],
+            "optimizer": ["adamw", "adam", "sgd", "rmsprop"],
             "learning_rate": [1e-4, 5e-4, 1e-3, 2e-3, 5e-3],
+            "weight_decay": [0.0, 1e-5, 1e-4, 5e-4],
+            "momentum": [0.0, 0.8, 0.9],
+            "scheduler": [
+                "constant",
+                "cosine_decay",
+                "linear_warmup_cosine_decay",
+                "exponential_decay",
+            ],
+            "warmup_steps": [0, 250, 500],
         }
     )
     baseline_model: str = "baseline"
@@ -166,7 +181,7 @@ class HyperparameterSearchConfig:
                     {"features": 64, "kernel_size": (3, 3), "pooling_type": "max", "dropout_rate": 0.1},
                     {"features": 128, "kernel_size": (3, 3), "pooling_type": "max", "dropout_rate": 0.2},
                     {"features": 256, "kernel_size": (3, 3), "pooling_type": "max", "dropout_rate": 0.3},
-                    {"features": 256, "kernel_size": (3, 3), "pooling_type": "max", "dropout_rate": 0.4},
+                    {"features": 256, "kernel_size": (3, 3), "pooling_type": "max", "dropout_rate": 0.35},
                 ],
                 [
                     {"features": 32, "kernel_size": (3, 3), "pooling_type": "max", "dropout_rate": 0.1},
@@ -174,6 +189,11 @@ class HyperparameterSearchConfig:
                     {"features": 128, "kernel_size": (3, 3), "pooling_type": "max", "dropout_rate": 0.25},
                     {"features": 256, "kernel_size": (3, 3), "pooling_type": "max", "dropout_rate": 0.3},
                     {"features": 512, "kernel_size": (3, 3), "pooling_type": "max", "dropout_rate": 0.4},
+                ],
+                [
+                    {"features": 64, "kernel_size": (5, 5), "pooling_type": "avg", "dropout_rate": 0.15},
+                    {"features": 128, "kernel_size": (3, 3), "pooling_type": "max", "dropout_rate": 0.25},
+                    {"features": 256, "kernel_size": (3, 3), "pooling_type": "max", "dropout_rate": 0.35},
                 ],
             ],
             "dense_blocks": [
@@ -189,13 +209,19 @@ class HyperparameterSearchConfig:
                     {"features": 256, "dropout_rate": 0.3, "activation": "relu"},
                     {"features": 128, "dropout_rate": 0.2, "activation": "relu"},
                 ],
+                [
+                    {"features": 768, "dropout_rate": 0.4, "activation": "relu"},
+                    {"features": 384, "dropout_rate": 0.3, "activation": "relu"},
+                ],
             ],
-            "learning_rate": [1e-4, 5e-4, 1e-3, 2e-3, 5e-3],
-            "weight_decay": [1e-4, 5e-4],
+            "learning_rate": [5e-4, 1e-3, 2e-3, 3e-3],
+            "weight_decay": [1e-5, 1e-4, 5e-4],
+            "optimizer": ["adamw", "adam"],
+            "scheduler": ["cosine_decay", "linear_warmup_cosine_decay"],
         }
     )
     evaluation_metric: str = "validation_accuracy"
-    max_combinations: int | None = None
+    max_combinations: int | None = 120
     output_subdir: str = "hyperparameter_search"
 
     def iter_grid(self) -> Iterator[Mapping[str, Any]]:
