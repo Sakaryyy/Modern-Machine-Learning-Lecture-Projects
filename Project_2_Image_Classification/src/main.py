@@ -7,6 +7,7 @@ import logging
 from pathlib import Path
 from typing import Sequence
 
+from .data_analysis.analysis import AnalysisConfig, CIFAR10DatasetAnalyzer
 from .data_loading.data_load_and_save import CIFAR10DataManager, PreparedDataset
 from .utils.logging import LoggingConfig, LoggingManager, get_logger
 
@@ -50,6 +51,8 @@ class CLIApplication:
             return self._run_training(args, dataset)
         if args.command == "classification":
             return self._run_classification(args, dataset)
+        if args.command == "analysis":
+            return self._run_analysis(args, dataset)
 
         self._logger.error("Unknown command '%s'.", args.command)
         return 1
@@ -81,6 +84,27 @@ class CLIApplication:
             args.input_path,
         )
         self._logger.warning("Classification routine is not yet implemented.")
+        return 0
+
+    def _run_analysis(self, args: argparse.Namespace, dataset: PreparedDataset) -> int:
+        """Handle the ``analysis`` sub-command."""
+
+        output_dir = args.output_dir or (args.data_dir / "analysis")
+        analysis_config = AnalysisConfig(
+            data_root=args.data_dir,
+            output_dir=output_dir,
+            val_split=args.val_split,
+            seed=args.random_seed,
+            sample_seed=args.sample_seed,
+        )
+        analyzer = CIFAR10DatasetAnalyzer(analysis_config)
+
+        self._logger.info(
+            "Running dataset analysis with output directory %s.",
+            output_dir,
+        )
+        analyzer.run(dataset)
+        self._logger.info("Dataset analysis completed successfully.")
         return 0
 
     # ------------------------------------------------------------------
@@ -163,6 +187,23 @@ class CLIApplication:
             type=Path,
             required=True,
             help="Directory or file containing the images to classify.",
+        )
+
+        analysis_parser = subparsers.add_parser(
+            "analysis",
+            help="Perform descriptive analysis of the CIFAR-10 dataset.",
+        )
+        analysis_parser.add_argument(
+            "--output-dir",
+            type=Path,
+            default=None,
+            help="Directory where analysis artefacts will be stored.",
+        )
+        analysis_parser.add_argument(
+            "--sample-seed",
+            type=int,
+            default=1234,
+            help="Random seed for sampling images in visualisations.",
         )
 
         return parser
