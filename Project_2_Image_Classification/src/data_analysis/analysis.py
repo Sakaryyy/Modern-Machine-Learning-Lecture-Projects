@@ -10,10 +10,12 @@ from typing import Any, Dict, Mapping, Sequence
 import jax.numpy as jnp
 import numpy as np
 
-from ..data_loading.data_load_and_save import CIFAR10DataManager, DatasetSplit, PreparedDataset
-from ..utils.logging import get_logger
-from ..visualization.data_vis import DataVisualizer, VisualizerConfig, normalise_label_counts
-from ..visualization.style import PlotStyleConfig
+from Project_2_Image_Classification.src.data_loading.data_load_and_save import CIFAR10DataManager, DatasetSplit, \
+    PreparedDataset
+from Project_2_Image_Classification.src.utils.logging import get_logger
+from Project_2_Image_Classification.src.visualization.data_vis import DataVisualizer, VisualizerConfig, \
+    normalise_label_counts
+from Project_2_Image_Classification.src.visualization.style import PlotStyleConfig
 
 __all__ = [
     "AnalysisConfig",

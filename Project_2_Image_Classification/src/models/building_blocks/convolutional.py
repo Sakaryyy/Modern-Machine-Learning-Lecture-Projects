@@ -9,7 +9,8 @@ import jax.numpy as jnp
 from flax import linen as nn
 from flax import struct
 
-from .common import resolve_activation
+from Project_2_Image_Classification.src.models.building_blocks.common import InitializerFn, resolve_activation, \
+    resolve_initializer
 
 __all__ = [
     "ConvBlockConfig",
@@ -52,6 +53,12 @@ class ConvBlockConfig:
     pooling_strides:
         Stride applied by the pooling layer.  When omitted, ``pooling_window``
         is used as stride as well.
+    kernel_init:
+        Initialisation scheme for the convolutional kernel.  Strings resolve to
+        a curated set of mathematically motivated defaults such as
+        ``"he_normal"``.
+    bias_init:
+        Initialisation scheme for the optional bias term.
     """
 
     features: int
@@ -67,6 +74,8 @@ class ConvBlockConfig:
     pooling_type: Optional[str] = None
     pooling_window: Tuple[int, int] = (2, 2)
     pooling_strides: Optional[Tuple[int, int]] = None
+    kernel_init: str | InitializerFn = "he_normal"
+    bias_init: str | InitializerFn = "zeros"
 
     def __post_init__(self) -> None:
         if self.features <= 0:
@@ -115,13 +124,18 @@ class ConvBlock(nn.Module):
 
         activation_fn = resolve_activation(self.config.activation)
 
-        x = nn.Conv(
-            features=self.config.features,
-            kernel_size=self.config.kernel_size,
-            strides=self.config.strides,
-            padding=self.config.padding,
-            use_bias=self.config.use_bias,
-        )(inputs)
+        conv_kwargs: dict[str, object] = {
+            "features": self.config.features,
+            "kernel_size": self.config.kernel_size,
+            "strides": self.config.strides,
+            "padding": self.config.padding,
+            "use_bias": self.config.use_bias,
+            "kernel_init": resolve_initializer(self.config.kernel_init),
+        }
+        if self.config.use_bias:
+            conv_kwargs["bias_init"] = resolve_initializer(self.config.bias_init)
+
+        x = nn.Conv(**conv_kwargs)(inputs)
 
         if self.config.batch_norm:
             x = nn.BatchNorm(

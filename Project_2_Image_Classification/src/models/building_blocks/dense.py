@@ -8,7 +8,8 @@ import jax.numpy as jnp
 from flax import linen as nn
 from flax import struct
 
-from .common import resolve_activation
+from Project_2_Image_Classification.src.models.building_blocks.common import InitializerFn, resolve_activation, \
+    resolve_initializer
 
 __all__ = [
     "DenseBlockConfig",
@@ -30,12 +31,21 @@ class DenseBlockConfig:
         Dropout probability.  A value of ``0.0`` disables dropout entirely.
     use_bias:
         Whether the dense layer should learn a bias term.
+    kernel_init:
+        Initialisation scheme used for the dense layer weights.  The value can
+        be either a callable following the Flax initializer protocol or a
+        string referencing a curated registry (e.g. ``"he_normal"`` or
+        ``"xavier_uniform"``).
+    bias_init:
+        Initialisation scheme used for the bias parameter.  Defaults to zeros.
     """
 
     features: int
     activation: str = "relu"
     dropout_rate: float = 0.0
     use_bias: bool = True
+    kernel_init: str | InitializerFn = "he_normal"
+    bias_init: str | InitializerFn = "zeros"
 
     def __post_init__(self) -> None:
         if self.features <= 0:
@@ -67,7 +77,14 @@ class DenseBlock(nn.Module):
         """
 
         activation_fn = resolve_activation(self.config.activation)
-        x = nn.Dense(self.config.features, use_bias=self.config.use_bias)(inputs)
+        dense_kwargs: dict[str, object] = {
+            "use_bias": self.config.use_bias,
+            "kernel_init": resolve_initializer(self.config.kernel_init),
+        }
+        if self.config.use_bias:
+            dense_kwargs["bias_init"] = resolve_initializer(self.config.bias_init)
+
+        x = nn.Dense(self.config.features, **dense_kwargs)(inputs)
         x = activation_fn(x)
 
         if self.config.dropout_rate > 0.0:

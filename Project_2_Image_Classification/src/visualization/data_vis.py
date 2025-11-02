@@ -11,8 +11,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
 
-from .style import PlotStyleConfig, PlotStyler
-from ..utils.logging import get_logger
+from Project_2_Image_Classification.src.utils.logging import get_logger
+from Project_2_Image_Classification.src.visualization.style import PlotStyleConfig, PlotStyler
 
 __all__ = [
     "VisualizerConfig",
@@ -122,7 +122,7 @@ class DataVisualizer:
 
         with self._styler.context():
             fig, ax = plt.subplots(figsize=(5, 3.5))
-            sns.barplot(x=labels, y=counts, ax=ax, palette="colorblind")
+            sns.barplot(x=labels, y=counts, ax=ax, palette="colorblind", hue="label")
             ax.set_ylabel("Number of samples")
             ax.set_xlabel("Split")
             ax.set_title("CIFAR-10 split sizes")

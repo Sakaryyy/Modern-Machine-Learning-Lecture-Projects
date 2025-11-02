@@ -1,8 +1,9 @@
 """Neural network building blocks used by model architectures."""
 
-from .common import ActivationFn, resolve_activation
-from .convolutional import ConvBlock, ConvBlockConfig
-from .dense import DenseBlock, DenseBlockConfig
+from Project_2_Image_Classification.src.models.building_blocks.common import ActivationFn, resolve_activation, \
+    InitializerFn, resolve_initializer
+from Project_2_Image_Classification.src.models.building_blocks.convolutional import ConvBlock, ConvBlockConfig
+from Project_2_Image_Classification.src.models.building_blocks.dense import DenseBlock, DenseBlockConfig
 
 __all__ = [
     "ActivationFn",
@@ -11,4 +12,6 @@ __all__ = [
     "ConvBlockConfig",
     "DenseBlock",
     "DenseBlockConfig",
+    "InitializerFn",
+    "resolve_initializer"
 ]

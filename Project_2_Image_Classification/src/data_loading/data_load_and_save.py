@@ -13,14 +13,14 @@ import jax.numpy as jnp
 import numpy as np
 
 try:
-    from torchvision import datasets
+    from torchvision import datasets, transforms
 except ImportError as exc:
     raise ImportError(
         "torchvision is required for downloading the CIFAR-10 dataset. "
         "Please install it via 'pip install torchvision'.",
     ) from exc
 
-from ..utils.logging import get_logger
+from Project_2_Image_Classification.src.utils.logging import get_logger
 
 
 @dataclass(frozen=True)
@@ -119,8 +119,8 @@ class CIFAR10DataManager:
     def _download_and_process(self) -> PreparedDataset:
         """Download CIFAR-10 and split it into train/validation/test."""
 
-        train_dataset = datasets.CIFAR10(root=self.raw_dir, train=True, download=True)
-        test_dataset = datasets.CIFAR10(root=self.raw_dir, train=False, download=True)
+        train_dataset = datasets.CIFAR10(root=self.raw_dir, train=True, download=True, transform=transforms.ToTensor())
+        test_dataset = datasets.CIFAR10(root=self.raw_dir, train=False, download=True, transform=transforms.ToTensor())
 
         self.logger.info("Downloaded CIFAR-10 with %d training and %d test samples.", len(train_dataset),
                          len(test_dataset))

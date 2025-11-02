@@ -9,13 +9,15 @@ import jax.numpy as jnp
 from flax import linen as nn
 from flax import struct
 
-from .building_blocks import (
+from Project_2_Image_Classification.src.models.building_blocks import (
     ConvBlock,
     ConvBlockConfig,
     DenseBlock,
     DenseBlockConfig,
+    InitializerFn,
+    resolve_initializer
 )
-from ..utils.logging import get_logger
+from Project_2_Image_Classification.src.utils.logging import get_logger
 
 __all__ = [
     "ImageClassifierConfig",
@@ -48,6 +50,12 @@ class ImageClassifierConfig:
         If ``True`` the spatial dimensions are reduced by global average
         pooling.  Otherwise the tensor is flattened prior to entering the dense
         classifier head.
+    classifier_kernel_init:
+        Initialisation scheme used for the classifier head weights.
+    classifier_bias_init:
+        Initialisation scheme used for the bias of the classifier head.
+    classifier_use_bias:
+        Whether the classifier head includes a bias term.
     """
 
     input_shape: Tuple[int, int, int]
@@ -56,6 +64,9 @@ class ImageClassifierConfig:
     dense_blocks: Sequence[DenseBlockConfig] = ()
     classifier_dropout: float = 0.0
     global_average_pooling: bool = True
+    classifier_kernel_init: str | InitializerFn = "he_normal"
+    classifier_bias_init: str | InitializerFn = "zeros"
+    classifier_use_bias: bool = True
 
     def __post_init__(self) -> None:
         if len(self.input_shape) != 3:
@@ -72,6 +83,8 @@ class ImageClassifierConfig:
             raise TypeError("All entries of 'dense_blocks' need to be DenseBlockConfig instances.")
         if not 0.0 <= self.classifier_dropout < 1.0:
             raise ValueError("'classifier_dropout' must lie within [0, 1).")
+        if not isinstance(self.classifier_use_bias, bool):
+            raise TypeError("'classifier_use_bias' must be a boolean flag.")
 
         object.__setattr__(self, "conv_blocks", tuple(self.conv_blocks))
         object.__setattr__(self, "dense_blocks", tuple(self.dense_blocks))
@@ -114,7 +127,16 @@ class ConfigurableImageClassifier(nn.Module):
         if self.config.classifier_dropout > 0.0:
             x = nn.Dropout(rate=self.config.classifier_dropout, name="classifier_dropout")(x, deterministic=not train)
 
-        logits = nn.Dense(self.config.num_classes, name="classifier_head")(x)
+        classifier_kwargs: dict[str, object] = {
+            "features": self.config.num_classes,
+            "kernel_init": resolve_initializer(self.config.classifier_kernel_init),
+            "use_bias": self.config.classifier_use_bias,
+            "name": "classifier_head",
+        }
+        if self.config.classifier_use_bias:
+            classifier_kwargs["bias_init"] = resolve_initializer(self.config.classifier_bias_init)
+
+        logits = nn.Dense(**classifier_kwargs)(x)
         return logits
 
 

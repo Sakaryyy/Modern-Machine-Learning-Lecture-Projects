@@ -1,7 +1,8 @@
 """Model definitions for the image classification project."""
 
-from .baseline import BaselineClassifier, BaselineModelConfig, create_baseline_model
-from .image_classifier import (
+from Project_2_Image_Classification.src.models.baseline import BaselineClassifier, BaselineModelConfig, \
+    create_baseline_model, resolve_initializer
+from Project_2_Image_Classification.src.models.image_classifier import (
     ConfigurableImageClassifier,
     ImageClassifierConfig,
     create_image_classifier,

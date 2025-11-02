@@ -9,8 +9,9 @@ import jax.numpy as jnp
 from flax import linen as nn
 from flax import struct
 
-from .building_blocks import resolve_activation
-from ..utils.logging import get_logger
+from Project_2_Image_Classification.src.models.building_blocks import InitializerFn, resolve_activation, \
+    resolve_initializer
+from Project_2_Image_Classification.src.utils.logging import get_logger
 
 __all__ = [
     "BaselineModelConfig",
@@ -41,6 +42,12 @@ class BaselineModelConfig:
         dropout entirely.
     use_bias:
         Whether dense layers should learn bias parameters.
+    kernel_init:
+        Initialisation scheme shared across all dense layers.  The value can be
+        a callable conforming to the Flax initializer protocol or a string
+        identifier such as ``"he_normal"``.
+    bias_init:
+        Initialisation scheme for the bias parameters when they are enabled.
     """
 
     input_shape: Tuple[int, ...]
@@ -49,6 +56,8 @@ class BaselineModelConfig:
     activation: str = "relu"
     dropout_rate: float = 0.0
     use_bias: bool = True
+    kernel_init: str | InitializerFn = "he_normal"
+    bias_init: str | InitializerFn = "zeros"
 
     def __post_init__(self) -> None:
         if not self.input_shape:
@@ -95,13 +104,29 @@ class BaselineClassifier(nn.Module):
 
         activation_fn = resolve_activation(self.config.activation)
         x = inputs.reshape((inputs.shape[0], -1))
-        x = nn.Dense(self.config.hidden_units, use_bias=self.config.use_bias)(x)
+        dense_kwargs: dict[str, object] = {
+            "features": self.config.hidden_units,
+            "use_bias": self.config.use_bias,
+            "kernel_init": resolve_initializer(self.config.kernel_init),
+        }
+        if self.config.use_bias:
+            dense_kwargs["bias_init"] = resolve_initializer(self.config.bias_init)
+
+        x = nn.Dense(**dense_kwargs)(x)
         x = activation_fn(x)
 
         if self.config.dropout_rate > 0.0:
             x = nn.Dropout(rate=self.config.dropout_rate)(x, deterministic=not train)
 
-        logits = nn.Dense(self.config.num_classes, use_bias=self.config.use_bias)(x)
+        classifier_kwargs: dict[str, object] = {
+            "features": self.config.num_classes,
+            "use_bias": self.config.use_bias,
+            "kernel_init": resolve_initializer(self.config.kernel_init),
+        }
+        if self.config.use_bias:
+            classifier_kwargs["bias_init"] = resolve_initializer(self.config.bias_init)
+
+        logits = nn.Dense(**classifier_kwargs)(x)
         return logits
 
 

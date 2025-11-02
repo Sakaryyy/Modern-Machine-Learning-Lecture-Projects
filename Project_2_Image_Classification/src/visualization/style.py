@@ -10,7 +10,7 @@ from typing import Dict, Iterator, Mapping
 import matplotlib as mpl
 import seaborn as sns
 
-from ..utils.logging import get_logger
+from Project_2_Image_Classification.src.utils.logging import get_logger
 
 __all__ = [
     "PlotStyleConfig",
