@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -11,6 +12,14 @@ from typing import Any, Mapping, Sequence
 import jax.numpy as jnp
 import yaml
 
+from Project_2_Image_Classification.src.ablation_routines.hyperparameter_search import (
+    HyperparameterExperimentManager,
+)
+from Project_2_Image_Classification.src.classification_routines.evaluation import (
+    ClassificationConfig,
+    ClassificationRunner,
+)
+from Project_2_Image_Classification.src.config.config import ConfigManager, ProjectConfig
 from Project_2_Image_Classification.src.data_analysis.analysis import AnalysisConfig, CIFAR10DatasetAnalyzer
 from Project_2_Image_Classification.src.data_loading.data_load_and_save import CIFAR10DataManager, PreparedDataset
 from Project_2_Image_Classification.src.models import (
@@ -21,16 +30,17 @@ from Project_2_Image_Classification.src.models import (
 )
 from Project_2_Image_Classification.src.models.building_blocks import ConvBlockConfig, DenseBlockConfig
 from Project_2_Image_Classification.src.training_routines import Trainer, TrainerConfig
+from Project_2_Image_Classification.src.utils.helper import log_jax_runtime_info
 from Project_2_Image_Classification.src.utils.logging import LoggingConfig, LoggingManager, get_logger
 
 
 class CLIApplication:
     """The command line interface of the project."""
 
-    DEFAULT_DATA_DIR = Path(__file__).resolve().parents[1] / "data"
-
     def __init__(self) -> None:
         self._logger = get_logger(self.__class__.__name__)
+        self._config_manager = ConfigManager()
+        self._project_config: ProjectConfig = self._config_manager.load()
 
     def run(self, argv: Sequence[str] | None = None) -> int:
         """Parse arguments, prepare data and dispatch to the selected command."""
@@ -51,6 +61,9 @@ class CLIApplication:
         LoggingManager(logging_config).configure()
 
         self._logger.info("Launching application with command '%s'.", args.command)
+        log_jax_runtime_info()
+
+        self._synchronise_paths(args)
 
         dataset: PreparedDataset | None = None
 
@@ -58,10 +71,14 @@ class CLIApplication:
             dataset = dataset or self._prepare_dataset(args)
             return self._run_training(args, dataset)
         if args.command == "classification":
-            return self._run_classification(args)
+            dataset = dataset or self._prepare_dataset(args)
+            return self._run_classification(args, dataset)
         if args.command == "analysis":
             dataset = dataset or self._prepare_dataset(args)
             return self._run_analysis(args, dataset)
+        if args.command == "experiments":
+            dataset = dataset or self._prepare_dataset(args)
+            return self._run_experiments(args, dataset)
 
         self._logger.error("Unknown command '%s'.", args.command)
         return 1
@@ -84,19 +101,28 @@ class CLIApplication:
         trainer_config = self._build_trainer_config(args, config_data)
         model_config = self._extract_model_config(config_data)
         try:
-            model = self._build_model(args.model, dataset, model_config)
+            model, resolved_model_config = self._build_model(args.model, dataset, model_config)
         except Exception as exc:  # pragma: no cover - defensive guard for CLI usage
             self._logger.error("Failed to construct model '%s': %s", args.model, exc)
             return 1
 
         trainer = Trainer(model, trainer_config)
         result = trainer.train(dataset)
+        self._persist_model_definition(
+            trainer_config.output_dir,
+            args.model,
+            resolved_model_config,
+            trainer_config,
+        )
 
         self._logger.info("Training completed. Artefacts stored in %s", trainer_config.output_dir)
         self._logger.info("Training history saved to %s", result.history_path)
+        if result.best_validation_metrics:
+            for name, value in result.best_validation_metrics.items():
+                self._logger.info("Best validation %s=%.4f", name, value)
         return 0
 
-    def _run_classification(self, args: argparse.Namespace) -> int:
+    def _run_classification(self, args: argparse.Namespace, dataset: PreparedDataset) -> int:
         """Handle the ``classification`` sub-command."""
 
         self._logger.info(
@@ -104,7 +130,28 @@ class CLIApplication:
             args.checkpoint,
             args.input_path,
         )
-        self._logger.warning("Classification routine is not yet implemented.")
+        run_directory = args.checkpoint
+        if run_directory.is_file():
+            if run_directory.parent.name == "checkpoints":
+                run_directory = run_directory.parent.parent
+            else:
+                run_directory = run_directory.parent
+
+        if args.input_path is not None:
+            self._logger.warning(
+                "Custom input classification is not yet implemented; evaluating the test split instead."
+            )
+
+        config = ClassificationConfig(
+            run_directory=run_directory,
+            batch_size=args.batch_size or self._project_config.training.eval_batch_size,
+            output_directory=args.output_dir,
+            save_predictions=not args.no_predictions,
+        )
+        runner = ClassificationRunner(config)
+        metrics = runner.run(dataset)
+        for name, value in metrics.items():
+            self._logger.info("Classification metric %s=%.4f", name, value)
         return 0
 
     def _run_analysis(self, args: argparse.Namespace, dataset: PreparedDataset | None) -> int:
@@ -128,6 +175,39 @@ class CLIApplication:
         self._logger.info("Dataset analysis completed successfully.")
         return 0
 
+    def _run_experiments(self, args: argparse.Namespace, dataset: PreparedDataset) -> int:
+        """Execute the configured ablation study and/or hyper-parameter search."""
+
+        config_data = self._load_config_file(args.config)
+        trainer_config = self._build_trainer_config(args, config_data)
+        model_overrides = self._extract_model_config(config_data)
+        base_model_config = self._resolve_model_config(args.model, dataset, model_overrides)
+        base_overrides = dict(model_overrides)
+
+        def model_builder(overrides: Mapping[str, Any]) -> tuple[Any, Any]:
+            merged = dict(base_overrides)
+            merged.update(overrides)
+            return self._build_model(args.model, dataset, merged)
+
+        manager = HyperparameterExperimentManager(
+            self._project_config,
+            dataset,
+            args.model,
+            model_builder,
+            base_model_config,
+            trainer_config,
+        )
+
+        if args.mode in {"ablation", "both"}:
+            self._logger.info("Starting ablation study for model %s.", args.model)
+            manager.run_ablation()
+        if args.mode in {"hyperparameter", "both"}:
+            self._logger.info("Starting hyper-parameter search for model %s.", args.model)
+            manager.run_hyperparameter_search()
+
+        self._logger.info("Experiment workflow completed successfully.")
+        return 0
+
     # ------------------------------------------------------------------
     # Argument parsing helpers
     # ------------------------------------------------------------------
@@ -140,7 +220,7 @@ class CLIApplication:
         parser.add_argument(
             "--data-dir",
             type=Path,
-            default=self.DEFAULT_DATA_DIR,
+            default=self._project_config.paths.data_dir,
             help="Directory where raw and processed datasets are stored.",
         )
         parser.add_argument(
@@ -248,8 +328,25 @@ class CLIApplication:
         classification_parser.add_argument(
             "--input-path",
             type=Path,
-            required=True,
-            help="Directory or file containing the images to classify.",
+            default=None,
+            help="Optional directory containing additional images to classify.",
+        )
+        classification_parser.add_argument(
+            "--batch-size",
+            type=int,
+            default=None,
+            help="Batch size used during evaluation (defaults to training configuration).",
+        )
+        classification_parser.add_argument(
+            "--no-predictions",
+            action="store_true",
+            help="Disable saving individual prediction CSV files.",
+        )
+        classification_parser.add_argument(
+            "--output-dir",
+            type=Path,
+            default=None,
+            help="Directory where classification artefacts will be stored.",
         )
 
         analysis_parser = subparsers.add_parser(
@@ -269,6 +366,36 @@ class CLIApplication:
             help="Random seed for sampling images in visualisations.",
         )
 
+        experiments_parser = subparsers.add_parser(
+            "experiments",
+            help="Run ablation studies and hyper-parameter searches.",
+        )
+        experiments_parser.add_argument(
+            "--mode",
+            type=str,
+            choices=("ablation", "hyperparameter", "both"),
+            default="both",
+            help="Select which experimental procedure to execute.",
+        )
+        experiments_parser.add_argument(
+            "--model",
+            type=str,
+            default="baseline",
+            help="Model architecture used as the starting point for experiments.",
+        )
+        experiments_parser.add_argument(
+            "--config",
+            type=Path,
+            default=None,
+            help="Optional configuration file with experiment overrides.",
+        )
+        experiments_parser.add_argument(
+            "--output-dir",
+            type=Path,
+            default=None,
+            help="Directory where training artefacts will be stored.",
+        )
+
         return parser
 
     def _resolve_log_level(self, level: str) -> int:
@@ -282,6 +409,18 @@ class CLIApplication:
             )
             return logging.INFO
         return getattr(logging, normalized)
+
+    def _synchronise_paths(self, args: argparse.Namespace) -> None:
+        """Update the persisted configuration with the latest CLI arguments."""
+
+        paths = self._project_config.paths
+        changed = False
+        if args.data_dir != paths.data_dir:
+            paths.data_dir = args.data_dir
+            changed = True
+        if changed:
+            paths.ensure_directories()
+            self._config_manager.save(self._project_config)
 
     def _prepare_dataset(self, args: argparse.Namespace) -> PreparedDataset:
         """Download (if required) and prepare the CIFAR-10 dataset."""
@@ -324,45 +463,58 @@ class CLIApplication:
             raise TypeError("The 'trainer' section of the configuration must be a mapping.")
 
         trainer_dict: dict[str, Any] = dict(trainer_section)
+        defaults = self._project_config.training
 
         default_output = trainer_dict.get("output_dir")
-        if args.output_dir is not None:
+        if args.output_dir:
             trainer_dict["output_dir"] = args.output_dir
         elif default_output is None:
             trainer_dict["output_dir"] = self._default_training_output_dir(args.model, args.data_dir)
 
-        if args.epochs is not None:
+        if args.epochs:
             trainer_dict["num_epochs"] = args.epochs
         else:
-            trainer_dict.setdefault("num_epochs", 20)
+            trainer_dict.setdefault("num_epochs", defaults.num_epochs)
 
-        if args.batch_size is not None:
+        if args.batch_size:
             trainer_dict["batch_size"] = args.batch_size
         else:
-            trainer_dict.setdefault("batch_size", 128)
+            trainer_dict.setdefault("batch_size", defaults.batch_size)
 
-        if args.eval_batch_size is not None:
+        if args.eval_batch_size:
             trainer_dict["eval_batch_size"] = args.eval_batch_size
+        else:
+            trainer_dict.setdefault("eval_batch_size", defaults.eval_batch_size)
+
+        trainer_dict.setdefault("log_every", defaults.log_every)
 
         trainer_dict["seed"] = args.random_seed
 
         optimizer_dict = dict(trainer_dict.get("optimizer", {}))
         if args.optimizer is not None:
             optimizer_dict["name"] = args.optimizer
-        optimizer_dict.setdefault("name", "adamw")
+        optimizer_dict.setdefault("name", defaults.optimizer)
+        optimizer_dict.setdefault("weight_decay", defaults.weight_decay)
         trainer_dict["optimizer"] = optimizer_dict
 
         scheduler_dict = dict(trainer_dict.get("scheduler", {}))
         if args.scheduler is not None:
             scheduler_dict["name"] = args.scheduler
-        scheduler_dict.setdefault("name", "constant")
+        scheduler_dict.setdefault("name", defaults.scheduler)
         if args.learning_rate is not None:
             scheduler_dict["learning_rate"] = args.learning_rate
-        scheduler_dict.setdefault("learning_rate", 1e-3)
+        scheduler_dict.setdefault("learning_rate", defaults.learning_rate)
+        for key, value in defaults.scheduler_kwargs.items():
+            scheduler_dict.setdefault(key, value)
         trainer_dict["scheduler"] = scheduler_dict
 
         loss_dict = dict(trainer_dict.get("loss", {}))
+        loss_dict.setdefault("name", defaults.loss)
+
         trainer_dict["loss"] = loss_dict
+
+        if "metrics" not in trainer_dict and defaults.metrics:
+            trainer_dict["metrics"] = list(defaults.metrics)
 
         return TrainerConfig.from_dict(trainer_dict)
 
@@ -379,13 +531,13 @@ class CLIApplication:
             raise TypeError("The 'model' section of the configuration must be a mapping.")
         return model_section
 
-    def _build_model(
+    def _resolve_model_config(
             self,
             model_name: str,
             dataset: PreparedDataset,
-            model_config: Mapping[str, Any],
-    ):
-        """Instantiate the neural network specified by ``model_name``."""
+            overrides: Mapping[str, Any],
+    ) -> BaselineModelConfig | ImageClassifierConfig:
+        """Create a model configuration dataclass from overrides and defaults."""
 
         train_split = dataset.splits["train"]
         input_shape = tuple(int(dim) for dim in train_split.images.shape[1:])
@@ -396,70 +548,108 @@ class CLIApplication:
             num_classes = int(jnp.max(train_split.labels).item()) + 1
 
         normalized_name = model_name.lower()
+        overrides_dict = dict(overrides)
         if normalized_name == "baseline":
-            config_dict = dict(model_config)
+            defaults = asdict(self._project_config.baseline_defaults)
+            config_dict = {**defaults, **overrides_dict}
             config = BaselineModelConfig(
                 input_shape=input_shape,
-                hidden_units=int(config_dict.get("hidden_units", 512)),
+                hidden_units=int(config_dict.get("hidden_units", defaults["hidden_units"])),
                 num_classes=num_classes,
-                activation=config_dict.get("activation", "relu"),
-                dropout_rate=float(config_dict.get("dropout_rate", 0.2)),
-                use_bias=bool(config_dict.get("use_bias", True)),
-                kernel_init=config_dict.get("kernel_init", "he_normal"),
-                bias_init=config_dict.get("bias_init", "zeros"),
+                activation=config_dict.get("activation", defaults["activation"]),
+                dropout_rate=float(config_dict.get("dropout_rate", defaults["dropout_rate"])),
+                use_bias=bool(config_dict.get("use_bias", defaults["use_bias"])),
+                kernel_init=config_dict.get("kernel_init", defaults["kernel_init"]),
+                bias_init=config_dict.get("bias_init", defaults["bias_init"]),
             )
             self._logger.info("Constructed baseline model with %d hidden units.", config.hidden_units)
-            return create_baseline_model(config)
+            return config
 
         if normalized_name in {"cnn", "image_classifier"}:
-            config_dict = dict(model_config)
-            conv_blocks_cfg = config_dict.get("conv_blocks")
-            if not conv_blocks_cfg:
-                conv_blocks_cfg = [
-                    {"features": 32, "kernel_size": (3, 3), "pooling_type": "max", "dropout_rate": 0.1},
-                    {"features": 64, "kernel_size": (3, 3), "pooling_type": "max", "dropout_rate": 0.2},
-                    {"features": 128, "kernel_size": (3, 3), "pooling_type": "max", "dropout_rate": 0.3},
-                ]
+            defaults = asdict(self._project_config.cnn_defaults)
+            config_dict = {**defaults, **overrides_dict}
+
+            conv_blocks_cfg = config_dict.get("conv_blocks") or defaults["conv_blocks"]
             conv_blocks: list[ConvBlockConfig] = []
             for block in conv_blocks_cfg:
                 block_settings = {"activation": "relu", "batch_norm": True}
                 block_settings.update(dict(block))
                 conv_blocks.append(ConvBlockConfig(**block_settings))
 
-            dense_blocks_cfg = config_dict.get("dense_blocks")
-            if dense_blocks_cfg is None:
-                dense_blocks_cfg = [{"features": 256, "dropout_rate": 0.5}]
+            dense_blocks_cfg = config_dict.get("dense_blocks") or defaults["dense_blocks"]
             dense_blocks: list[DenseBlockConfig] = []
             for block in dense_blocks_cfg:
                 block_settings = {"activation": "relu"}
                 block_settings.update(dict(block))
                 dense_blocks.append(DenseBlockConfig(**block_settings))
 
-            image_classifier_config = ImageClassifierConfig(
+            return ImageClassifierConfig(
                 input_shape=input_shape,
                 num_classes=num_classes,
                 conv_blocks=conv_blocks,
                 dense_blocks=dense_blocks,
-                classifier_dropout=float(config_dict.get("classifier_dropout", 0.5)),
-                global_average_pooling=bool(config_dict.get("global_average_pooling", True)),
-                classifier_kernel_init=config_dict.get("classifier_kernel_init", "he_normal"),
-                classifier_bias_init=config_dict.get("classifier_bias_init", "zeros"),
-                classifier_use_bias=bool(config_dict.get("classifier_use_bias", True)),
+                classifier_dropout=float(config_dict.get("classifier_dropout", defaults["classifier_dropout"])),
+                global_average_pooling=bool(
+                    config_dict.get("global_average_pooling", defaults["global_average_pooling"])),
+                classifier_kernel_init=config_dict.get("classifier_kernel_init", defaults["classifier_kernel_init"]),
+                classifier_bias_init=config_dict.get("classifier_bias_init", defaults["classifier_bias_init"]),
+                classifier_use_bias=bool(config_dict.get("classifier_use_bias", defaults["classifier_use_bias"])),
             )
+
+        raise ValueError(f"Unknown model architecture '{model_name}'.")
+
+    def _build_model(
+            self,
+            model_name: str,
+            dataset: PreparedDataset,
+            model_config: Mapping[str, Any],
+    ):
+        """Instantiate the neural network specified by ``model_name``."""
+
+        normalized_name = model_name.lower()
+        config = self._resolve_model_config(model_name, dataset, model_config)
+
+        if normalized_name == "baseline":
+            self._logger.info("Constructed baseline model with %d hidden units.", config.hidden_units)
+            return create_baseline_model(config), config
+
+        if normalized_name in {"cnn", "image_classifier"}:
+
             self._logger.info(
                 "Constructed CNN with %d convolutional blocks and %d dense blocks.",
-                len(conv_blocks),
-                len(dense_blocks),
+                len(config.conv_blocks),
+                len(config.dense_blocks),
             )
-            return create_image_classifier(image_classifier_config)
+            return create_image_classifier(config), config
 
         raise ValueError(f"Unknown model architecture '{model_name}'.")
 
     def _default_training_output_dir(self, model_name: str, data_dir: Path) -> Path:
         """Return the default directory where training artefacts should be saved."""
 
-        timestamp = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
-        return (data_dir / "training_runs" / f"{model_name}_{timestamp}").resolve()
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        base_dir = self._project_config.paths.outputs_dir / "training_runs"
+        return (base_dir / f"{model_name}_{timestamp}").resolve()
+
+    def _persist_model_definition(
+            self,
+            output_dir: Path,
+            model_name: str,
+            model_config: Any,
+            trainer_config: TrainerConfig,
+    ) -> None:
+        """Store a YAML file describing the model and training configuration."""
+
+        definition_path = output_dir / "model_definition.yaml"
+        config_dict = asdict(model_config) if hasattr(model_config, "__dataclass_fields__") else dict(model_config)
+        payload = {
+            "model_name": model_name,
+            "config": config_dict,
+            "trainer": trainer_config.to_dict(),
+            "loss": asdict(trainer_config.loss),
+        }
+        definition_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+        self._logger.info("Persisted model definition to %s", definition_path)
 
 
 def main(argv: Sequence[str] | None = None) -> int:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Dict, Iterable, Iterator, List, Mapping, MutableMapping, Sequence
 
@@ -12,7 +12,9 @@ import jax
 import jax.numpy as jnp
 import optax
 import pandas as pd
+import yaml
 from flax import linen as nn
+from flax import serialization
 from flax.training import train_state
 
 from Project_2_Image_Classification.src.data_loading.data_load_and_save import DatasetSplit, PreparedDataset
@@ -116,6 +118,23 @@ class TrainerConfig:
             raise TypeError("'metrics' must be provided as a sequence of metric names.")
         return cls(**data)
 
+    def to_dict(self) -> Dict[str, object]:
+        """Convert the configuration into a serialisable dictionary."""
+
+        def _convert(value: object) -> object:
+            if isinstance(value, Path):
+                return str(value)
+            if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+                return [_convert(item) for item in value]
+            if isinstance(value, Mapping):
+                return {key: _convert(item) for key, item in value.items()}
+            if hasattr(value, "__dataclass_fields__"):
+                return {key: _convert(item) for key, item in asdict(value).items()}
+            return value
+
+        raw = asdict(self)
+        return {key: _convert(value) for key, value in raw.items()}
+
 
 @dataclass(slots=True)
 class TrainingResult:
@@ -128,6 +147,8 @@ class TrainingResult:
     figure_paths: Dict[str, Path]
     best_validation_metrics: Mapping[str, float] | None
     test_metrics: Mapping[str, float] | None
+    checkpoint_path: Path
+    trainer_config_path: Path
 
 
 class TrainingState(train_state.TrainState):
@@ -174,6 +195,7 @@ class Trainer:
                 style_config=self._config.style_config,
             )
         )
+        self._trainer_config_path = self._persist_trainer_config()
 
         self._logger.info(
             "Trainer initialised (epochs=%d, batch_size=%d, eval_batch_size=%d).",
@@ -292,6 +314,8 @@ class Trainer:
             self._logger.warning(
                 "Learning-rate curve could not be generated because the history lacks a learning_rate column.")
 
+        checkpoint_path = self._save_checkpoint(state)
+
         return TrainingResult(
             state=state,
             history=history_df,
@@ -300,6 +324,8 @@ class Trainer:
             figure_paths=figure_paths,
             best_validation_metrics=best_validation_metrics,
             test_metrics=test_metrics,
+            checkpoint_path=checkpoint_path,
+            trainer_config_path=self._trainer_config_path,
         )
 
     # ------------------------------------------------------------------
@@ -309,6 +335,26 @@ class Trainer:
         steps_per_epoch = math.ceil(train_split.images.shape[0] / self._config.batch_size)
         total_steps = self._config.num_epochs * steps_per_epoch
         return create_learning_rate_schedule(self._config.scheduler, total_steps=total_steps)
+
+    def _persist_trainer_config(self) -> Path:
+        """Persist the trainer configuration used for this run."""
+
+        config_path = self._output_dir / "trainer_config.yaml"
+        config_path.write_text(yaml.safe_dump(self._config.to_dict(), sort_keys=False), encoding="utf-8")
+        self._logger.debug("Stored trainer configuration in %s", config_path)
+        return config_path
+
+    def _save_checkpoint(self, state: TrainingState) -> Path:
+        """Serialise the trained model parameters to disk."""
+
+        checkpoint_dir = self._output_dir / "checkpoints"
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        checkpoint_path = checkpoint_dir / "final_params.msgpack"
+        checkpoint_path.write_bytes(serialization.to_bytes(state.params))
+        metadata = {"step": int(jax.device_get(state.step))}
+        (checkpoint_dir / "checkpoint_meta.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+        self._logger.info("Saved model checkpoint to %s", checkpoint_path)
+        return checkpoint_path
 
     def _build_train_step(self):
         loss_fn = self._loss_fn

@@ -57,7 +57,7 @@ class LoggingManager:
 
         handlers = [logging.StreamHandler(sys.stdout)]
 
-        if self._config.log_to_file:
+        if self._config.log_to_file and self._config.log_directory is not None:
             log_file = self._resolve_log_file()
             log_file.parent.mkdir(parents=True, exist_ok=True)
             handlers.append(logging.FileHandler(log_file, mode="a", encoding="utf-8"))

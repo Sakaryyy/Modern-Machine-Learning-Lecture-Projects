@@ -1,0 +1,149 @@
+paths:
+  data_dir: /workspace/Modern-Machine-Learning-Lecture-Projects/Project_2_Image_Classification/data
+  outputs_dir: /workspace/Modern-Machine-Learning-Lecture-Projects/Project_2_Image_Classification/outputs
+  configs_dir: /workspace/Modern-Machine-Learning-Lecture-Projects/Project_2_Image_Classification/outputs/configs
+  models_dir: /workspace/Modern-Machine-Learning-Lecture-Projects/Project_2_Image_Classification/outputs/models
+  analysis_dir: /workspace/Modern-Machine-Learning-Lecture-Projects/Project_2_Image_Classification/outputs/analysis
+  figures_dir: /workspace/Modern-Machine-Learning-Lecture-Projects/Project_2_Image_Classification/outputs/figures
+training:
+  num_epochs: 50
+  batch_size: 128
+  eval_batch_size: 256
+  log_every: 100
+  optimizer: adamw
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  scheduler: cosine_decay
+  scheduler_kwargs:
+    warmup_steps: 500
+    alpha: 0.0
+  loss: cross_entropy
+  metrics:
+    - loss
+    - accuracy
+baseline_defaults:
+  hidden_units: 512
+  activation: relu
+  dropout_rate: 0.2
+  use_bias: true
+  kernel_init: he_normal
+  bias_init: zeros
+cnn_defaults:
+  conv_blocks:
+    - features: 32
+      kernel_size:
+        - 3
+        - 3
+      pooling_type: max
+      dropout_rate: 0.1
+    - features: 64
+      kernel_size:
+        - 3
+        - 3
+      pooling_type: max
+      dropout_rate: 0.1
+    - features: 128
+      kernel_size:
+        - 3
+        - 3
+      pooling_type: max
+      dropout_rate: 0.1
+  dense_blocks:
+    - features: 256
+      dropout_rate: 0.3
+      activation: relu
+    - features: 128
+      dropout_rate: 0.3
+      activation: relu
+  classifier_dropout: 0.3
+  global_average_pooling: true
+  classifier_kernel_init: he_normal
+  classifier_bias_init: zeros
+  classifier_use_bias: true
+ablation:
+  parameters:
+    hidden_units:
+      - 128
+      - 256
+      - 512
+      - 1024
+    dropout_rate:
+      - 0.0
+      - 0.2
+      - 0.4
+    optimizer:
+      - adamw
+      - sgd
+    learning_rate:
+      - 0.0005
+      - 0.001
+      - 0.002
+  baseline_model: baseline
+  repeats: 1
+  metric: validation_accuracy
+  output_subdir: ablation
+hyperparameter_search:
+  search_space:
+    conv_blocks:
+      - - features: 32
+          kernel_size:
+            - 3
+            - 3
+          pooling_type: max
+          dropout_rate: 0.1
+        - features: 64
+          kernel_size:
+            - 3
+            - 3
+          pooling_type: max
+          dropout_rate: 0.2
+        - features: 128
+          kernel_size:
+            - 3
+            - 3
+          pooling_type: max
+          dropout_rate: 0.3
+      - - features: 64
+          kernel_size:
+            - 3
+            - 3
+          pooling_type: max
+          dropout_rate: 0.1
+        - features: 128
+          kernel_size:
+            - 3
+            - 3
+          pooling_type: max
+          dropout_rate: 0.2
+        - features: 256
+          kernel_size:
+            - 3
+            - 3
+          pooling_type: max
+          dropout_rate: 0.3
+        - features: 256
+          kernel_size:
+            - 3
+            - 3
+          pooling_type: max
+          dropout_rate: 0.4
+    dense_blocks:
+      - - features: 256
+          dropout_rate: 0.5
+          activation: relu
+      - - features: 512
+          dropout_rate: 0.4
+          activation: relu
+        - features: 256
+          dropout_rate: 0.3
+          activation: relu
+    learning_rate:
+      - 0.0005
+      - 0.001
+      - 0.002
+    weight_decay:
+      - 0.0001
+      - 0.0005
+  evaluation_metric: validation_accuracy
+  max_combinations: null
+  output_subdir: hyperparameter_search
