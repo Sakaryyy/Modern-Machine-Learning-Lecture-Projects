@@ -17,6 +17,8 @@ class AblationVisualizerConfig:
     """Configuration for :class:`AblationVisualizer`."""
 
     output_directory: Path
+    figures_directory: Path | None = None
+    tables_directory: Path | None = None
     style_config: PlotStyleConfig | None = None
 
 
@@ -25,8 +27,12 @@ class AblationVisualizer:
 
     def __init__(self, config: AblationVisualizerConfig) -> None:
         self._config = config
-        self._config.output_directory.mkdir(parents=True, exist_ok=True)
-
+        self._base_dir = config.output_directory
+        self._base_dir.mkdir(parents=True, exist_ok=True)
+        self.figures_dir = config.figures_directory or (self._base_dir / "figures")
+        self.tables_dir = config.tables_directory or (self._base_dir / "tables")
+        self.figures_dir.mkdir(parents=True, exist_ok=True)
+        self.tables_dir.mkdir(parents=True, exist_ok=True)
     # ------------------------------------------------------------------
     # internal helpers
     # ------------------------------------------------------------------
@@ -91,7 +97,7 @@ class AblationVisualizer:
     def save_metric_overview(self, summary: pd.DataFrame, metric: str) -> Path:
         """Plot the aggregated metric per ablated hyper-parameter."""
 
-        figure_path = self._config.output_directory / f"ablation_{metric}.png"
+        figure_path = self.figures_dir / f"ablation_{metric}.png"
 
         # make sure we have what we need
         if "parameter" not in summary.columns or "value" not in summary.columns:
@@ -131,10 +137,48 @@ class AblationVisualizer:
 
         return figure_path
 
+    def save_delta_overview(self, summary: pd.DataFrame, metric: str) -> Path:
+        """Visualise the performance delta relative to the baseline configuration."""
+
+        if "delta_vs_baseline" not in summary.columns:
+            raise ValueError("Summary must contain a 'delta_vs_baseline' column.")
+
+        plot_data = summary[summary["parameter"] != "baseline"].copy()
+        if plot_data.empty:
+            raise ValueError("No ablation entries beyond the baseline configuration were provided.")
+
+        plot_data["value"] = plot_data["value"].astype(str)
+        figure_path = self.figures_dir / f"ablation_{metric}_delta.png"
+
+        with scientific_style(self._config.style_config):
+            fig, ax = plt.subplots(
+                figsize=self._auto_figsize(plot_data["parameter"].nunique(), plot_data["value"].nunique())
+            )
+            sns.barplot(
+                data=plot_data,
+                x="parameter",
+                y="delta_vs_baseline",
+                hue="value",
+                palette="coolwarm",
+                ax=ax,
+            )
+            ax.axhline(0.0, color="black", linewidth=1, linestyle="--", alpha=0.6)
+            ax.set_ylabel(f"Δ {metric.replace('_', ' ')} vs baseline")
+            ax.set_xlabel("Hyper-parameter")
+            ax.set_title(f"Change in {metric.replace('_', ' ')} relative to baseline")
+            if plot_data["parameter"].nunique() > 4:
+                self._rotate_xticks(ax)
+            self._place_legend_below(fig, ax, title="Value")
+            fig.tight_layout()
+            fig.savefig(figure_path, dpi=300, bbox_inches="tight")
+            plt.close(fig)
+
+        return figure_path
+
     def save_summary_table(self, summary: pd.DataFrame) -> Path:
         """Persist the ablation results as a CSV file."""
 
-        path = self._config.output_directory / "ablation_summary.csv"
+        path = self.tables_dir / "ablation_summary.csv"
         summary.to_csv(path, index=False)
         return path
 
@@ -182,7 +226,7 @@ class AblationVisualizer:
                     self._rotate_xticks(ax, rotation=30)
 
                 fig.tight_layout()
-                figure_path = self._config.output_directory / f"ablation_{parameter}_distribution.png"
+                figure_path = self.figures_dir / f"ablation_{parameter}_distribution.png"
                 fig.savefig(figure_path)
                 plt.close(fig)
             paths[str(parameter)] = figure_path

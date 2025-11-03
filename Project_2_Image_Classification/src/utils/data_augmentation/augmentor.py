@@ -61,6 +61,10 @@ class DataAugmentationConfig:
     cutout_fill:
         Optional fill value used inside the CutOut mask.  When ``None`` the
         image mean is used which preserves overall brightness.
+    use_random_crop / use_horizontal_flip / ...:
+        Boolean switches enabling or disabling the corresponding augmentation
+        independent of probability values.  This allows fine grained control
+        via configuration files or command line flags.
     """
 
     enabled: bool = True
@@ -78,6 +82,13 @@ class DataAugmentationConfig:
     cutout_probability: float = 0.25
     cutout_size: int = 8
     cutout_fill: float | None = None
+    use_random_crop: bool = True
+    use_horizontal_flip: bool = True
+    use_vertical_flip: bool = False
+    use_rotation: bool = True
+    use_color_jitter: bool = True
+    use_gaussian_noise: bool = True
+    use_cutout: bool = True
 
     def __post_init__(self) -> None:
         for name, value in {
@@ -105,7 +116,17 @@ class DataAugmentationConfig:
             raise ValueError("'gaussian_noise_std' must be non-negative.")
         if self.cutout_size <= 0:
             raise ValueError("'cutout_size' must be a positive integer.")
-
+        for flag_name in (
+                "use_random_crop",
+                "use_horizontal_flip",
+                "use_vertical_flip",
+                "use_rotation",
+                "use_color_jitter",
+                "use_gaussian_noise",
+                "use_cutout",
+        ):
+            if not isinstance(getattr(self, flag_name), bool):
+                raise TypeError(f"'{flag_name}' must be a boolean flag.")
 
 class ImageAugmenter:
     """Apply stochastic image augmentation using differentiable ``jax`` ops."""
@@ -126,11 +147,11 @@ class ImageAugmenter:
         key = rng
         augmented = images
 
-        if self._config.random_crop_padding > 0:
+        if self._config.use_random_crop and self._config.random_crop_padding > 0:
             key, subkey = jax.random.split(key)
             augmented = self._random_crop(subkey, augmented)
 
-        if self._config.horizontal_flip_prob > 0:
+        if self._config.use_horizontal_flip and self._config.horizontal_flip_prob > 0:
             key, subkey = jax.random.split(key)
             augmented = self._random_flip(subkey, augmented, axis=1, probability=self._config.horizontal_flip_prob)
 
@@ -138,19 +159,27 @@ class ImageAugmenter:
             key, subkey = jax.random.split(key)
             augmented = self._random_flip(subkey, augmented, axis=0, probability=self._config.vertical_flip_prob)
 
-        if self._config.rotation_probability > 0 and self._config.rotation_degrees > 0:
+        if (
+                self._config.use_rotation
+                and self._config.rotation_probability > 0
+                and self._config.rotation_degrees > 0
+        ):
             key, subkey = jax.random.split(key)
             augmented = self._random_rotate(subkey, augmented)
 
-        if self._config.color_jitter_probability > 0:
+        if self._config.use_color_jitter and self._config.color_jitter_probability > 0:
             key, subkey = jax.random.split(key)
             augmented = self._color_jitter(subkey, augmented)
 
-        if self._config.gaussian_noise_probability > 0 and self._config.gaussian_noise_std > 0:
+        if (
+                self._config.use_gaussian_noise
+                and self._config.gaussian_noise_probability > 0
+                and self._config.gaussian_noise_std > 0
+        ):
             key, subkey = jax.random.split(key)
             augmented = self._gaussian_noise(subkey, augmented)
 
-        if self._config.cutout_probability > 0:
+        if self._config.use_cutout and self._config.cutout_probability > 0:
             key, subkey = jax.random.split(key)
             augmented = self._cutout(subkey, augmented)
 

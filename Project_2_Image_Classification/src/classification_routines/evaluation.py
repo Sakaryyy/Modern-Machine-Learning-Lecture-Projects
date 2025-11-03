@@ -44,6 +44,12 @@ class ClassificationConfig:
     output_directory: Path | None = None
     save_predictions: bool = True
     style_config: PlotStyleConfig | None = None
+    enable_feature_visualization: bool = True
+    feature_sample_count: int = 4
+    feature_maps_per_layer: int = 6
+    feature_dense_topk: int = 20
+    feature_random_seed: int = 1234
+    gallery_seed: int = 2024
 
     def resolve_output_directory(self) -> Path:
         """Return the directory that will store evaluation artefacts."""
@@ -63,9 +69,16 @@ class ClassificationRunner:
         self._logger = get_logger(self.__class__.__name__)
         self._device = log_jax_runtime_info()
         self._output_dir = self._config.resolve_output_directory()
+        self._figures_dir = self._output_dir / "figures"
+        self._tables_dir = self._output_dir / "tables"
+        self._metrics_dir = self._output_dir / "metrics"
+        for directory in (self._figures_dir, self._tables_dir, self._metrics_dir):
+            directory.mkdir(parents=True, exist_ok=True)
         self._visualizer = ClassificationVisualizer(
             ClassificationVisualizerConfig(
                 output_directory=self._output_dir,
+                figures_directory=self._figures_dir,
+                tables_directory=self._tables_dir,
                 style_config=self._config.style_config,
             )
         )
@@ -106,12 +119,14 @@ class ClassificationRunner:
         preds_np = predictions["predictions"].astype(int)
         probabilities = predictions.get("probabilities")
 
+        gallery_rng = np.random.default_rng(self._config.gallery_seed)
         self._visualizer.save_prediction_gallery(
             images_np,
             labels_np,
             preds_np,
             class_names,
             probabilities=probabilities,
+            rng=gallery_rng,
         )
         self._visualizer.save_per_class_accuracy(labels_np, preds_np, class_names)
         if probabilities is not None:
@@ -120,7 +135,21 @@ class ClassificationRunner:
         if self._config.save_predictions:
             self._save_predictions(predictions, class_names)
 
-        metrics_path = self._output_dir / "classification_metrics.json"
+        if self._config.enable_feature_visualization:
+            try:
+                self._visualize_feature_activations(
+                    model,
+                    params,
+                    images_np,
+                    labels_np,
+                    preds_np,
+                    class_names,
+                    probabilities,
+                )
+            except Exception as exc:  # pragma: no cover - defensive guard for optional visualisations
+                self._logger.warning("Failed to generate feature visualisations: %s", exc)
+
+        metrics_path = self._metrics_dir / "classification_metrics.json"
         metrics_path.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
         self._logger.info("Classification results persisted to %s", metrics_path)
 
@@ -224,7 +253,7 @@ class ClassificationRunner:
             yield {"images": batch_images, "labels": batch_labels}
 
     def _save_predictions(self, predictions: Mapping[str, np.ndarray], class_names: Sequence[str]) -> None:
-        path = self._output_dir / "predictions.csv"
+        path = self._tables_dir / "predictions.csv"
         labels = predictions["labels"].astype(int)
         preds = predictions["predictions"].astype(int)
         data = {
@@ -245,3 +274,110 @@ class ClassificationRunner:
         for true, pred in zip(labels, predictions, strict=False):
             matrix[int(true), int(pred)] += 1
         return matrix
+
+    def _visualize_feature_activations(
+            self,
+            model: nn.Module,
+            params: Mapping[str, Any],
+            images: np.ndarray,
+            labels: np.ndarray,
+            predictions: np.ndarray,
+            class_names: Sequence[str],
+            probabilities: np.ndarray | None,
+    ) -> None:
+        if images.shape[0] == 0:
+            self._logger.warning("No images available for feature visualisation.")
+            return
+
+        sample_count = min(self._config.feature_sample_count, images.shape[0])
+        if sample_count <= 0:
+            return
+
+        rng = np.random.default_rng(self._config.feature_random_seed)
+        indices = rng.choice(images.shape[0], size=sample_count, replace=False)
+        sample_images = images[indices]
+        sample_labels = labels[indices]
+        sample_preds = predictions[indices]
+        sample_probs = probabilities[indices] if probabilities is not None else None
+
+        activations = self._capture_intermediate_activations(model, params, sample_images)
+        if not activations:
+            self._logger.info("Model does not expose intermediate activations for visualisation.")
+            return
+
+        conv_layers = [(name, value) for name, value in activations.items() if value.ndim == 4]
+        dense_layers = [(name, value) for name, value in activations.items() if value.ndim == 2]
+        conv_layers.sort(key=lambda item: item[0])
+        dense_layers.sort(key=lambda item: item[0])
+
+        if not conv_layers and not dense_layers:
+            self._logger.info("No intermediate activations available for visualisation.")
+            return
+
+        for order, sample_index in enumerate(range(sample_count)):
+            conv_samples = [(name, np.asarray(value[sample_index])) for name, value in conv_layers]
+            dense_samples = [(name, np.asarray(value[sample_index])) for name, value in dense_layers]
+            label_name = class_names[int(sample_labels[sample_index])]
+            pred_name = class_names[int(sample_preds[sample_index])]
+            confidence = None
+            if sample_probs is not None:
+                confidence = float(sample_probs[sample_index, int(sample_preds[sample_index])])
+            safe_pred = pred_name.lower().replace(" ", "_")
+            filename_prefix = f"sample_{order:02d}_{safe_pred}"
+            if conv_samples:
+                self._visualizer.save_activation_overview(
+                    sample_images[sample_index],
+                    conv_samples,
+                    label_name=label_name,
+                    prediction_name=pred_name,
+                    confidence=confidence,
+                    filename=f"{filename_prefix}_overview.png",
+                )
+                for layer_name, activation in conv_samples:
+                    self._visualizer.save_feature_map_grid(
+                        layer_name,
+                        activation,
+                        max_maps=self._config.feature_maps_per_layer,
+                        filename=f"{filename_prefix}_{layer_name}_featuremaps.png",
+                    )
+            for layer_name, activation in dense_samples:
+                self._visualizer.save_dense_activation_profile(
+                    layer_name,
+                    activation,
+                    top_k=self._config.feature_dense_topk,
+                    filename=f"{filename_prefix}_{layer_name}_dense.png",
+                )
+
+    def _capture_intermediate_activations(
+            self,
+            model: nn.Module,
+            params: Mapping[str, Any],
+            images: np.ndarray,
+    ) -> Mapping[str, np.ndarray]:
+        from Project_2_Image_Classification.src.models.building_blocks.convolutional import ConvBlock
+        from Project_2_Image_Classification.src.models.building_blocks.dense import DenseBlock
+
+        variables = {"params": params}
+        capture_fn = lambda module, _: isinstance(module, (ConvBlock, DenseBlock))  # noqa: E731
+
+        try:
+            _, intermediates = model.apply(
+                variables,
+                images,
+                train=False,
+                capture_intermediates=capture_fn,
+                mutable=["intermediates"],
+            )
+        except TypeError:
+            return {}
+
+        intermediates = intermediates.get("intermediates", {})
+        activations: dict[str, np.ndarray] = {}
+        for module_path, calls in intermediates.items():
+            value = calls.get("__call__")
+            if value is None:
+                continue
+            if isinstance(value, (list, tuple)):
+                value = value[-1]
+            activations[module_path] = np.asarray(value)
+        return activations

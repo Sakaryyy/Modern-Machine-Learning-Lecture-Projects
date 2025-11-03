@@ -160,6 +160,42 @@ class TrainingVisualizer:
         self._logger.info("Saved %s distribution plot to %s", metric, output_path)
         return output_path
 
+    def save_generalization_gap(
+            self,
+            history: pd.DataFrame,
+            metric: str,
+            *,
+            filename: str | None = None,
+    ) -> Path:
+        """Visualise the generalisation gap (train minus validation) over time."""
+
+        train_column = f"train_{metric}"
+        val_column = f"validation_{metric}"
+        if train_column not in history or val_column not in history:
+            raise ValueError(
+                f"Both train and validation columns are required to compute the generalisation gap for '{metric}'.",
+            )
+
+        df = history.copy()
+        if "epoch" not in df.columns:
+            df.insert(0, "epoch", range(1, len(df) + 1))
+
+        df["generalization_gap"] = df[train_column] - df[val_column]
+        filename = filename or f"{metric}_generalization_gap.png"
+
+        with self._styler.context():
+            fig, ax = plt.subplots(figsize=(6, 4))
+            ax.plot(df["epoch"], df["generalization_gap"], marker="o", color="#4C72B0")
+            ax.axhline(0.0, color="black", linewidth=1, linestyle="--", alpha=0.6)
+            ax.set_xlabel("Epoch")
+            ax.set_ylabel("Train - Validation")
+            ax.set_title(f"Generalisation gap for {metric.replace('_', ' ')}")
+            sns.despine()
+            output_path = self._save_figure(fig, filename)
+
+        self._logger.info("Saved generalisation gap plot for %s to %s", metric, output_path)
+        return output_path
+
     def save_metric_correlation(
             self,
             history: pd.DataFrame,

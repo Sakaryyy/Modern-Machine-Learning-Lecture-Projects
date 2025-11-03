@@ -117,6 +117,8 @@ class CLIApplication:
 
         self._logger.info("Training completed. Artefacts stored in %s", trainer_config.output_dir)
         self._logger.info("Training history saved to %s", result.history_path)
+        self._logger.info("Training history CSV saved to %s", result.history_csv_path)
+        self._logger.info("Metrics summary saved to %s", result.metrics_path)
         if result.best_validation_metrics:
             for name, value in result.best_validation_metrics.items():
                 self._logger.info("Best validation %s=%.4f", name, value)
@@ -343,6 +345,11 @@ class CLIApplication:
         )
         training_parser.set_defaults(data_augmentation=None)
 
+        self._register_augmentation_toggles(
+            training_parser,
+            prefix="",
+        )
+
         classification_parser = subparsers.add_parser(
             "classification",
             help="Run inference using a previously trained model.",
@@ -436,6 +443,10 @@ class CLIApplication:
             help="Disable data augmentation for experiment runs.",
         )
         experiments_parser.set_defaults(data_augmentation=None)
+        self._register_augmentation_toggles(
+            experiments_parser,
+            prefix="experiments_",
+        )
 
         return parser
 
@@ -569,9 +580,58 @@ class CLIApplication:
             augmentation_dict["enabled"] = bool(cli_augmentation)
         else:
             augmentation_dict.setdefault("enabled", defaults.use_data_augmentation)
+        toggle_fields = (
+            "use_random_crop",
+            "use_horizontal_flip",
+            "use_vertical_flip",
+            "use_rotation",
+            "use_color_jitter",
+            "use_gaussian_noise",
+            "use_cutout",
+        )
+        for field_name in toggle_fields:
+            cli_value = getattr(args, f"augmentation_{field_name}", None)
+            if cli_value is None:
+                cli_value = getattr(args, f"experiments_augmentation_{field_name}", None)
+            if cli_value is not None:
+                augmentation_dict[field_name] = bool(cli_value)
         trainer_dict["augmentation"] = augmentation_dict
 
         return TrainerConfig.from_dict(trainer_dict)
+
+    def _register_augmentation_toggles(
+            self,
+            parser: argparse.ArgumentParser,
+            *,
+            prefix: str,
+    ) -> None:
+        """Register --enable/--disable flags for individual augmentation steps."""
+
+        toggles = (
+            ("random-crop", "use_random_crop", "random reflection padding and cropping"),
+            ("horizontal-flip", "use_horizontal_flip", "horizontal flips"),
+            ("vertical-flip", "use_vertical_flip", "vertical flips"),
+            ("rotation", "use_rotation", "stochastic rotations"),
+            ("color-jitter", "use_color_jitter", "colour jitter"),
+            ("gaussian-noise", "use_gaussian_noise", "Gaussian noise injection"),
+            ("cutout", "use_cutout", "CutOut regularisation"),
+        )
+
+        for flag, attribute, description in toggles:
+            dest = f"{prefix}augmentation_{attribute}"
+            parser.add_argument(
+                f"--enable-{flag}",
+                dest=dest,
+                action="store_true",
+                help=f"Enable {description} during data augmentation.",
+            )
+            parser.add_argument(
+                f"--disable-{flag}",
+                dest=dest,
+                action="store_false",
+                help=f"Disable {description} during data augmentation.",
+            )
+            parser.set_defaults(**{dest: None})
 
     def _extract_model_config(self, config_data: Mapping[str, Any]) -> Mapping[str, Any]:
         """Return the model configuration section extracted from ``config_data``."""

@@ -7,8 +7,9 @@ import shutil
 from dataclasses import asdict, replace
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, Mapping
+from typing import Any, Callable, Dict, Iterable, Mapping, Sequence
 
+import numpy as np
 import pandas as pd
 import yaml
 
@@ -113,12 +114,18 @@ class HyperparameterExperimentManager:
                         }
                     )
 
-        summary, raw_frame = self._build_results_frames(results, metric_name, study_root)
         visualizer = AblationVisualizer(
             AblationVisualizerConfig(output_directory=study_root)
         )
+        summary, raw_frame = self._build_results_frames(results, metric_name, visualizer.tables_dir)
         visualizer.save_summary_table(summary)
         visualizer.save_metric_overview(summary, metric_name)
+        try:
+            delta_path = visualizer.save_delta_overview(summary, metric_name)
+        except ValueError as exc:
+            self._logger.debug("Skipping ablation delta plot: %s", exc)
+        else:
+            self._logger.info("Saved ablation delta plot to %s", delta_path)
         try:
             distribution_paths = visualizer.save_parameter_boxplots(raw_frame, metric_name)
             for parameter, path in distribution_paths.items():
@@ -168,16 +175,28 @@ class HyperparameterExperimentManager:
         visualizer = HyperparameterSearchVisualizer(
             HyperparameterSearchVisualizerConfig(output_directory=study_root)
         )
-        visualizer.save_ranked_results(frame, "metric")
-        if {"trainer__learning_rate", "trainer__weight_decay"}.issubset(frame.columns):
-            visualizer.save_metric_heatmap(frame, "metric", "trainer__learning_rate", "trainer__weight_decay")
-        visualizer.save_metric_distribution(frame, "metric")
+        raw_path = visualizer.tables_dir / "hyperparameter_search_raw.csv"
+        frame.to_csv(raw_path, index=False)
+
+        enriched = self._augment_hyperparameter_frame(frame)
+
+        visualizer.save_ranked_results(enriched, "metric")
+        if {"trainer__learning_rate", "trainer__weight_decay"}.issubset(enriched.columns):
+            visualizer.save_metric_heatmap(enriched, "metric", "trainer__learning_rate", "trainer__weight_decay")
+        visualizer.save_metric_distribution(enriched, "metric")
         try:
-            visualizer.save_numeric_pairplot(frame, "metric")
+            visualizer.save_numeric_pairplot(enriched, "metric")
         except ValueError as exc:
             self._logger.warning("Skipping hyper-parameter pairplot: %s", exc)
-        visualizer.save_top_configurations(frame, "metric")
-        self._copy_best_checkpoint(frame, "metric", study_root, prefix="hyperparameter")
+        visualizer.save_top_configurations(enriched, "metric")
+        try:
+            effect_paths = visualizer.save_parameter_effects(enriched, "metric")
+        except ValueError as exc:
+            self._logger.debug("Skipping hyper-parameter effect plots: %s", exc)
+        else:
+            for column, path in effect_paths.items():
+                self._logger.info("Saved hyper-parameter effect plot for %s to %s", column, path)
+        self._copy_best_checkpoint(enriched, "metric", study_root, prefix="hyperparameter")
         return study_root
 
     # ------------------------------------------------------------------
@@ -362,15 +381,71 @@ class HyperparameterExperimentManager:
             self,
             results: Iterable[Dict[str, Any]],
             metric_name: str,
-            study_root: Path,
+            tables_dir: Path,
     ) -> tuple[pd.DataFrame, pd.DataFrame]:
         if not results:
             raise ValueError("No ablation experiments executed. Check the configuration.")
         frame = pd.DataFrame(results)
-        raw_path = study_root / "ablation_raw_results.csv"
+        tables_dir.mkdir(parents=True, exist_ok=True)
+        raw_path = tables_dir / "ablation_raw_results.csv"
         frame.to_csv(raw_path, index=False)
-        aggregated = frame.groupby(["parameter", "value"], as_index=False)[metric_name].mean()
+
+        baseline_rows = frame[frame["parameter"] == "baseline"]
+        baseline_mean = float(baseline_rows[metric_name].mean()) if not baseline_rows.empty else None
+
+        aggregated = (
+            frame.groupby(["parameter", "value"])[metric_name]
+            .agg(["mean", "std", "count"])
+            .reset_index()
+            .rename(columns={"mean": metric_name, "std": f"{metric_name}_std", "count": "runs"})
+        )
+
+        if baseline_mean is not None and np.isfinite(baseline_mean):
+            aggregated["delta_vs_baseline"] = aggregated[metric_name] - baseline_mean
+            denominator = baseline_mean if baseline_mean != 0 else np.nan
+            aggregated["relative_change_pct"] = aggregated["delta_vs_baseline"] / denominator * 100.0
+            frame["delta_vs_baseline"] = frame[metric_name] - baseline_mean
+        else:
+            aggregated["delta_vs_baseline"] = np.nan
+            aggregated["relative_change_pct"] = np.nan
+
         return aggregated, frame
+
+    def _augment_hyperparameter_frame(self, frame: pd.DataFrame) -> pd.DataFrame:
+        """Add derived statistics to the hyper-parameter search results."""
+
+        enriched = frame.copy()
+
+        def _normalize_blocks(value: Any) -> Sequence[Mapping[str, Any]] | None:
+            if isinstance(value, Sequence) and not isinstance(value, (str, bytes, dict)):
+                return [dict(block) for block in value]
+            if isinstance(value, str):
+                try:
+                    parsed = yaml.safe_load(value)
+                except Exception:
+                    return None
+                if isinstance(parsed, Sequence) and not isinstance(parsed, (str, bytes, dict)):
+                    return [dict(block) for block in parsed]
+            return None
+
+        if "model__conv_blocks" in enriched.columns:
+            conv_blocks = enriched["model__conv_blocks"].apply(_normalize_blocks)
+            enriched["model__conv_block_count"] = conv_blocks.apply(lambda blocks: len(blocks) if blocks else np.nan)
+            enriched["model__total_conv_features"] = conv_blocks.apply(
+                lambda blocks: float(np.sum([block.get("features", 0) for block in blocks])) if blocks else np.nan
+            )
+
+        if "model__dense_blocks" in enriched.columns:
+            dense_blocks = enriched["model__dense_blocks"].apply(_normalize_blocks)
+            enriched["model__dense_block_count"] = dense_blocks.apply(lambda blocks: len(blocks) if blocks else np.nan)
+            enriched["model__total_dense_units"] = dense_blocks.apply(
+                lambda blocks: float(np.sum([block.get("features", 0) for block in blocks])) if blocks else np.nan
+            )
+
+        if "metric" in enriched.columns:
+            enriched["metric_rank"] = enriched["metric"].rank(ascending=False, method="min")
+
+        return enriched
 
     def _copy_best_checkpoint(self, frame: pd.DataFrame, metric_name: str, study_root: Path, prefix: str) -> None:
         best_row = frame.sort_values(metric_name, ascending=False).iloc[0]

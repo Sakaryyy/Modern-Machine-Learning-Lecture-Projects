@@ -18,6 +18,8 @@ class HyperparameterSearchVisualizerConfig:
     """Configuration for the hyper-parameter search visualiser."""
 
     output_directory: Path
+    figures_directory: Path | None = None
+    tables_directory: Path | None = None
     style_config: PlotStyleConfig | None = None
 
 
@@ -26,13 +28,18 @@ class HyperparameterSearchVisualizer:
 
     def __init__(self, config: HyperparameterSearchVisualizerConfig) -> None:
         self._config = config
-        self._config.output_directory.mkdir(parents=True, exist_ok=True)
+        self._base_dir = config.output_directory
+        self._base_dir.mkdir(parents=True, exist_ok=True)
+        self.figures_dir = config.figures_directory or (self._base_dir / "figures")
+        self.tables_dir = config.tables_directory or (self._base_dir / "tables")
+        self.figures_dir.mkdir(parents=True, exist_ok=True)
+        self.tables_dir.mkdir(parents=True, exist_ok=True)
 
     def save_metric_heatmap(self, summary: pd.DataFrame, metric: str, x: str, y: str) -> Path:
         """Save a heatmap showing metric variation across two parameters."""
 
         pivot = summary.pivot_table(index=y, columns=x, values=metric, aggfunc="mean")
-        figure_path = self._config.output_directory / f"hyperparameter_{metric}_heatmap.png"
+        figure_path = self.figures_dir / f"hyperparameter_{metric}_heatmap.png"
         with scientific_style(self._config.style_config):
             fig, ax = plt.subplots(figsize=(6, 5))
             sns.heatmap(pivot, annot=True, fmt=".3f", cmap="viridis", ax=ax)
@@ -46,7 +53,7 @@ class HyperparameterSearchVisualizer:
         """Persist the sorted search results to CSV."""
 
         ranked = summary.sort_values(metric, ascending=False).reset_index(drop=True)
-        path = self._config.output_directory / "hyperparameter_search_results.csv"
+        path = self.tables_dir / "hyperparameter_search_results.csv"
         ranked.to_csv(path, index=False)
         return path
 
@@ -59,7 +66,7 @@ class HyperparameterSearchVisualizer:
             ax.set_xlabel(metric.replace("_", " ").title())
             ax.set_ylabel("Count")
             ax.set_title(f"Distribution of {metric.replace('_', ' ')} across search runs")
-            figure_path = self._config.output_directory / f"hyperparameter_{metric}_distribution.png"
+            figure_path = self.figures_dir / f"hyperparameter_{metric}_distribution.png"
             fig.tight_layout()
             fig.savefig(figure_path)
             plt.close(fig)
@@ -78,7 +85,7 @@ class HyperparameterSearchVisualizer:
         with scientific_style(self._config.style_config):
             grid = sns.pairplot(numeric_frame, corner=True, diag_kind="hist")
             grid.fig.suptitle("Pairwise relationships between numeric hyper-parameters", fontsize=12)
-            figure_path = self._config.output_directory / "hyperparameter_pairplot.png"
+            figure_path = self.figures_dir / "hyperparameter_pairplot.png"
             grid.fig.savefig(figure_path)
             plt.close(grid.fig)
         return figure_path
@@ -95,8 +102,43 @@ class HyperparameterSearchVisualizer:
             ax.set_xlabel("Rank")
             ax.set_ylabel(metric.replace("_", " ").title())
             ax.set_title(f"Top {len(ranked)} configurations")
-            figure_path = self._config.output_directory / "hyperparameter_topk.png"
+            figure_path = self.figures_dir / "hyperparameter_topk.png"
             fig.tight_layout()
             fig.savefig(figure_path)
             plt.close(fig)
         return figure_path
+
+    def save_parameter_effects(self, summary: pd.DataFrame, metric: str) -> dict[str, Path]:
+        """Create scatter/line plots showing how ``metric`` varies with numeric hyper-parameters."""
+
+        numeric_columns = [
+            column
+            for column in summary.columns
+            if column != metric and pd.api.types.is_numeric_dtype(summary[column])
+        ]
+        paths: dict[str, Path] = {}
+        for column in numeric_columns:
+            data = summary[[column, metric]].dropna()
+            if data.empty or data[column].nunique() <= 1:
+                continue
+            data = data.sort_values(column)
+            with scientific_style(self._config.style_config):
+                fig, ax = plt.subplots(figsize=(6, 4))
+                sns.lineplot(data=data, x=column, y=metric, marker="o", ax=ax)
+                best_idx = data[metric].idxmax()
+                best_row = data.loc[best_idx]
+                ax.scatter([best_row[column]], [best_row[metric]], color="red", s=60, label="Best")
+                ax.set_xlabel(column.replace("_", " ").title())
+                ax.set_ylabel(metric.replace("_", " ").title())
+                ax.set_title(f"{metric.replace('_', ' ').title()} vs {column.replace('_', ' ').title()}")
+                ax.legend(frameon=False)
+                figure_path = self.figures_dir / f"hyperparameter_effect_{column}.png"
+                fig.tight_layout()
+                fig.savefig(figure_path)
+                plt.close(fig)
+            paths[column] = figure_path
+
+        if not paths:
+            raise ValueError("No numeric hyper-parameters available to plot effects.")
+
+        return paths

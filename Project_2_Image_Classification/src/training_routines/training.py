@@ -159,6 +159,7 @@ class TrainingResult:
     state: "TrainingState"
     history: pd.DataFrame
     history_path: Path
+    history_csv_path: Path
     metrics_path: Path
     figure_paths: Dict[str, Path]
     best_validation_metrics: Mapping[str, float] | None
@@ -204,11 +205,14 @@ class Trainer:
 
         self._output_dir = self._config.output_dir
         self._output_dir.mkdir(parents=True, exist_ok=True)
-        figures_dir = self._output_dir / "figures"
-        figures_dir.mkdir(parents=True, exist_ok=True)
+        self._figures_dir = self._output_dir / "figures"
+        self._reports_dir = self._output_dir / "reports"
+        self._metrics_dir = self._output_dir / "metrics"
+        for directory in (self._figures_dir, self._reports_dir, self._metrics_dir):
+            directory.mkdir(parents=True, exist_ok=True)
         self._visualizer = TrainingVisualizer(
             TrainingVisualizerConfig(
-                output_directory=figures_dir,
+                output_directory=self._figures_dir,
                 style_config=self._config.style_config,
             )
         )
@@ -306,9 +310,10 @@ class Trainer:
             )
 
         history_df = pd.DataFrame(history_records)
-        history_path = self._output_dir / "training_history.xlsx"
+        history_path = self._reports_dir / "training_history.xlsx"
         history_df.to_excel(history_path, index=False)
-        history_df.to_csv(self._output_dir / "training_history.csv", index=False)
+        history_csv_path = self._reports_dir / "training_history.csv"
+        history_df.to_csv(history_csv_path, index=False)
         self._logger.info("Persisted training history to %s", history_path)
 
         metrics_summary: MutableMapping[str, Mapping[str, float] | None] = {
@@ -329,7 +334,7 @@ class Trainer:
             else:
                 self._logger.warning("Test split evaluation returned no metrics. The split may be empty.")
 
-        metrics_path = self._output_dir / "metrics_summary.json"
+        metrics_path = self._metrics_dir / "metrics_summary.json"
         metrics_path.write_text(json.dumps(metrics_summary, indent=2), encoding="utf-8")
         self._logger.info("Stored metrics summary in %s", metrics_path)
 
@@ -348,12 +353,28 @@ class Trainer:
             else:
                 figure_paths[f"{metric}_distribution"] = distribution_path
 
+            try:
+                gap_path = self._visualizer.save_generalization_gap(history_df, metric)
+            except ValueError:
+                self._logger.debug("Generalisation gap plot unavailable for metric '%s'.", metric)
+            else:
+                figure_paths[f"{metric}_generalization_gap"] = gap_path
+
+            try:
+                figure_paths["metric_correlation"] = self._visualizer.save_metric_correlation(
+                    history_df,
+                    self._config.metrics,
+                )
+            except ValueError as exc:
+                self._logger.debug("Skipping metric correlation plot: %s", exc)
+
         checkpoint_path = self._save_checkpoint(state)
 
         return TrainingResult(
             state=state,
             history=history_df,
             history_path=history_path,
+            history_csv_path=history_csv_path,
             metrics_path=metrics_path,
             figure_paths=figure_paths,
             best_validation_metrics=best_validation_metrics,
