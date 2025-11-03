@@ -10,6 +10,8 @@ import jax.numpy as jnp
 import numpy as np
 import numpy.typing as npt
 
+from Project_2_Image_Classification.src.utils.logging import get_logger
+
 __all__ = [
     "DataAugmentationConfig",
     "ImageAugmenter",
@@ -137,6 +139,9 @@ class ImageAugmenter:
         if isinstance(config, Mapping):
             config = DataAugmentationConfig(**config)
         self._config = config
+        self._logger = get_logger(self.__class__.__name__)
+        self._has_logged_runtime_shape = False
+        self._log_pipeline_summary()
 
     def __call__(self, rng: jax.Array, images: jnp.ndarray) -> jnp.ndarray:
         """Return augmented ``images`` sampled according to ``rng``."""
@@ -183,7 +188,15 @@ class ImageAugmenter:
             key, subkey = jax.random.split(key)
             augmented = self._cutout(subkey, augmented)
 
-        return jnp.clip(augmented, 0.0, 1.0)
+        augmented = jnp.clip(augmented, 0.0, 1.0)
+        if not self._has_logged_runtime_shape:
+            self._logger.info(
+                "Augmentation processed batch with shape %s -> %s (sample count preserved).",
+                tuple(images.shape),
+                tuple(augmented.shape),
+            )
+            self._has_logged_runtime_shape = True
+        return augmented
 
     # ------------------------------------------------------------------
     # Individual augmentation primitives
@@ -289,6 +302,64 @@ class ImageAugmenter:
 
         augmented = jax.vmap(jitter)(images, brightness_offsets, contrast_factors, saturation_factors, mask)
         return augmented
+
+    def _log_pipeline_summary(self) -> None:
+        """Log a human readable summary of the augmentation pipeline."""
+
+        if not self._config.enabled:
+            self._logger.info("Data augmentation disabled; batches pass through unchanged.")
+            return
+
+        steps: list[str] = []
+        if self._config.use_random_crop and self._config.random_crop_padding > 0:
+            steps.append(f"Random crop (padding={self._config.random_crop_padding})")
+        if self._config.use_horizontal_flip and self._config.horizontal_flip_prob > 0:
+            steps.append(f"Horizontal flip (p={self._config.horizontal_flip_prob:.2f})")
+        if self._config.use_vertical_flip and self._config.vertical_flip_prob > 0:
+            steps.append(f"Vertical flip (p={self._config.vertical_flip_prob:.2f})")
+        if (
+                self._config.use_rotation
+                and self._config.rotation_probability > 0
+                and self._config.rotation_degrees > 0
+        ):
+            steps.append(
+                f"Rotation (±{self._config.rotation_degrees:.1f}° with p={self._config.rotation_probability:.2f})"
+            )
+        if self._config.use_color_jitter and self._config.color_jitter_probability > 0:
+            steps.append(
+                (
+                    "Color jitter (Δbrightness≤"
+                    f"{self._config.brightness_delta:.2f}, Δcontrast≤{self._config.contrast_delta:.2f}, "
+                    f"Δsaturation≤{self._config.saturation_delta:.2f}, p={self._config.color_jitter_probability:.2f})"
+                )
+            )
+        if (
+                self._config.use_gaussian_noise
+                and self._config.gaussian_noise_probability > 0
+                and self._config.gaussian_noise_std > 0
+        ):
+            steps.append(
+                f"Gaussian noise (std={self._config.gaussian_noise_std:.3f}, p={self._config.gaussian_noise_probability:.2f})"
+            )
+        if self._config.use_cutout and self._config.cutout_probability > 0:
+            steps.append(
+                f"CutOut (size={self._config.cutout_size}, p={self._config.cutout_probability:.2f})"
+            )
+
+        if not steps:
+            self._logger.info(
+                "Augmentation enabled but no stochastic operations are active; batches remain unchanged."
+            )
+            return
+
+        self._logger.info(
+            "Augmentation pipeline initialised with %d step(s).", len(steps)
+        )
+        for step_description in steps:
+            self._logger.info(" • %s", step_description)
+        self._logger.info(
+            "Augmentation preserves the number of samples per batch; logging actual shapes on first use."
+        )
 
     def _gaussian_noise(self, rng: jax.Array, images: jnp.ndarray) -> jnp.ndarray:
         key_mask, key_noise = jax.random.split(rng)

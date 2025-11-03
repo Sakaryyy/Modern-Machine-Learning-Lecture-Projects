@@ -35,20 +35,6 @@ class HyperparameterSearchVisualizer:
         self.figures_dir.mkdir(parents=True, exist_ok=True)
         self.tables_dir.mkdir(parents=True, exist_ok=True)
 
-    def save_metric_heatmap(self, summary: pd.DataFrame, metric: str, x: str, y: str) -> Path:
-        """Save a heatmap showing metric variation across two parameters."""
-
-        pivot = summary.pivot_table(index=y, columns=x, values=metric, aggfunc="mean")
-        figure_path = self.figures_dir / f"hyperparameter_{metric}_heatmap.png"
-        with scientific_style(self._config.style_config):
-            fig, ax = plt.subplots(figsize=(6, 5))
-            sns.heatmap(pivot, annot=True, fmt=".3f", cmap="viridis", ax=ax)
-            ax.set_title(f"{metric.replace('_', ' ').title()} across {x} and {y}")
-            fig.tight_layout()
-            fig.savefig(figure_path)
-            plt.close(fig)
-        return figure_path
-
     def save_ranked_results(self, summary: pd.DataFrame, metric: str) -> Path:
         """Persist the sorted search results to CSV."""
 

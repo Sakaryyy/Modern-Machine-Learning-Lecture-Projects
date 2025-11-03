@@ -442,6 +442,12 @@ class CLIApplication:
             action="store_false",
             help="Disable data augmentation for experiment runs.",
         )
+        experiments_parser.add_argument(
+            "--batch-size",
+            type=int,
+            default=None,
+            help="Mini-batch size used during optimisation.",
+        )
         experiments_parser.set_defaults(data_augmentation=None)
         self._register_augmentation_toggles(
             experiments_parser,

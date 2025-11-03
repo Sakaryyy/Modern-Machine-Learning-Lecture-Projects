@@ -196,37 +196,6 @@ class TrainingVisualizer:
         self._logger.info("Saved generalisation gap plot for %s to %s", metric, output_path)
         return output_path
 
-    def save_metric_correlation(
-            self,
-            history: pd.DataFrame,
-            metrics: Sequence[str],
-            *,
-            filename: str = "metric_correlation_heatmap.png",
-    ) -> Path:
-        """Visualise the correlation structure across recorded metrics."""
-
-        columns: list[str] = []
-        for metric in metrics:
-            for prefix in ("train_", "validation_"):
-                candidate = f"{prefix}{metric}"
-                if candidate in history.columns:
-                    columns.append(candidate)
-
-        unique_columns = list(dict.fromkeys(columns))
-        if len(unique_columns) < 2:
-            raise ValueError("At least two metric columns are required to compute correlations.")
-
-        correlation = history[unique_columns].corr()
-
-        with self._styler.context():
-            fig, ax = plt.subplots(figsize=(5, 4))
-            sns.heatmap(correlation, annot=True, fmt=".2f", cmap="coolwarm", ax=ax, vmin=-1, vmax=1)
-            ax.set_title("Metric correlation heatmap")
-            output_path = self._save_figure(fig, filename)
-
-        self._logger.info("Saved metric correlation heatmap to %s", output_path)
-        return output_path
-
     # ------------------------------------------------------------------
     # Internal utilities
     # ------------------------------------------------------------------

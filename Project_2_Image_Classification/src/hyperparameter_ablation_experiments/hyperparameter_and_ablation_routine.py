@@ -181,8 +181,6 @@ class HyperparameterExperimentManager:
         enriched = self._augment_hyperparameter_frame(frame)
 
         visualizer.save_ranked_results(enriched, "metric")
-        if {"trainer__learning_rate", "trainer__weight_decay"}.issubset(enriched.columns):
-            visualizer.save_metric_heatmap(enriched, "metric", "trainer__learning_rate", "trainer__weight_decay")
         visualizer.save_metric_distribution(enriched, "metric")
         try:
             visualizer.save_numeric_pairplot(enriched, "metric")

@@ -62,19 +62,6 @@ cnn_defaults:
   classifier_use_bias: true
 ablation:
   parameters:
-    hidden_units:
-      - 64
-      - 128
-      - 256
-      - 512
-      - 1024
-    dropout_rate:
-      - 0.0
-      - 0.1
-      - 0.2
-      - 0.3
-      - 0.4
-      - 0.5
     optimizer:
       - adamw
       - adam
@@ -86,11 +73,11 @@ ablation:
       - 0.001
       - 0.005
     weight_decay:
-      - 0.0
       - 0.00001
       - 0.0001
       - 0.0005
     momentum:
+      - 0.8
       - 0.85
       - 0.9
     scheduler:

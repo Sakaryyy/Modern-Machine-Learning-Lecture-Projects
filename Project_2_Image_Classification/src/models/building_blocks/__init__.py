@@ -2,8 +2,8 @@
 
 from Project_2_Image_Classification.src.models.building_blocks.common import ActivationFn, resolve_activation, \
     InitializerFn, resolve_initializer
-from Project_2_Image_Classification.src.models.building_blocks.convolutional import ConvBlock, ConvBlockConfig
-from Project_2_Image_Classification.src.models.building_blocks.dense import DenseBlock, DenseBlockConfig
+from Project_2_Image_Classification.src.models.building_blocks.convolution_layer import ConvBlock, ConvBlockConfig
+from Project_2_Image_Classification.src.models.building_blocks.dense_layer import DenseBlock, DenseBlockConfig
 
 __all__ = [
     "ActivationFn",

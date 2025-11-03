@@ -242,6 +242,8 @@ class Trainer:
         validation_split = dataset.splits.get("validation")
         test_split = dataset.splits.get("test") if self._config.evaluate_on_test else None
 
+        self._log_dataset_overview(train_split, validation_split, test_split)
+
         rng = jax.random.PRNGKey(self._config.seed)
         init_rng, dropout_rng, data_rng = jax.random.split(rng, 3)
 
@@ -275,6 +277,7 @@ class Trainer:
                 train_split,
                 epoch_rng,
                 train_step_fn,
+                epoch=epoch,
             )
 
             lr_step = max(0, int(state.step) - 1)
@@ -282,6 +285,9 @@ class Trainer:
                 "epoch": float(epoch),
                 "train_loss": train_metrics["loss"],
                 "train_accuracy": train_metrics["accuracy"],
+                "train_grad_norm": train_metrics.get("grad_norm", float("nan")),
+                "train_num_batches": train_metrics.get("num_batches", float("nan")),
+                "train_num_samples": train_metrics.get("num_samples", float("nan")),
                 "learning_rate": float(schedule(lr_step)),
             }
 
@@ -301,11 +307,13 @@ class Trainer:
             history_records.append(record)
 
             self._logger.info(
-                "Epoch %d/%d - train_loss=%.4f train_acc=%.3f%s",
+                "Epoch %d/%d - train_loss=%.4f train_acc=%.3f grad_norm=%.4f (%d batches)%s",
                 epoch,
                 self._config.num_epochs,
                 record["train_loss"],
                 record["train_accuracy"],
+                record["train_grad_norm"],
+                int(record["train_num_batches"]),
                 f" val_acc={record.get('validation_accuracy', float('nan')):.3f}" if validation_split is not None else "",
             )
 
@@ -359,14 +367,6 @@ class Trainer:
                 self._logger.debug("Generalisation gap plot unavailable for metric '%s'.", metric)
             else:
                 figure_paths[f"{metric}_generalization_gap"] = gap_path
-
-            try:
-                figure_paths["metric_correlation"] = self._visualizer.save_metric_correlation(
-                    history_df,
-                    self._config.metrics,
-                )
-            except ValueError as exc:
-                self._logger.debug("Skipping metric correlation plot: %s", exc)
 
         checkpoint_path = self._save_checkpoint(state)
 
@@ -450,6 +450,7 @@ class Trainer:
             (loss, (logits, new_model_state)), grads = jax.value_and_grad(
                 loss_with_logits, has_aux=True
             )(state.params)
+            grad_norm = optax.global_norm(grads)
             state = state.apply_gradients(grads=grads)
             updates = {"dropout_rng": new_dropout_rng}
 
@@ -459,6 +460,7 @@ class Trainer:
             state = state.replace(**updates)
 
             metrics = self._compute_metrics(logits, batch["labels"], loss)
+            metrics["grad_norm"] = grad_norm
             return state, metrics
 
         return jax.jit(train_step)
@@ -487,6 +489,8 @@ class Trainer:
             split: DatasetSplit,
             rng: jax.Array,
             train_step_fn,
+            *,
+            epoch: int,
     ) -> tuple[TrainingState, Dict[str, float]]:
         metrics: List[Dict[str, float]] = []
         shuffle_rng = rng
@@ -494,26 +498,55 @@ class Trainer:
         if self._augmenter is not None:
             shuffle_rng, augmentation_rng = jax.random.split(rng)
 
+        num_samples = split.images.shape[0]
+        num_batches = math.ceil(num_samples / self._config.batch_size)
+        self._logger.debug(
+            "Epoch %d/%d - processing %d training samples as %d batches (batch_size=%d).",
+            epoch,
+            self._config.num_epochs,
+            num_samples,
+            num_batches,
+            self._config.batch_size,
+        )
+
         batch_iter = self._iterate_batches(
             split,
             batch_size=self._config.batch_size,
             shuffle=True,
             rng=shuffle_rng,
         )
+        logged_augmentation_shape = False
         for step, batch in enumerate(batch_iter, start=1):
             if self._augmenter is not None and augmentation_rng is not None:
                 augmentation_rng, batch_rng = jax.random.split(augmentation_rng)
                 batch["images"] = self._augmenter(batch_rng, batch["images"])
+                if not logged_augmentation_shape:
+                    self._logger.debug(
+                        "Epoch %d - first augmented batch shape: %s",
+                        epoch,
+                        tuple(batch["images"].shape),
+                    )
+                    logged_augmentation_shape = True
             state, batch_metrics = train_step_fn(state, batch)
             metrics.append(batch_metrics)
             if step % self._config.log_every == 0:
                 self._logger.debug(
-                    "Step %d - loss=%.4f acc=%.3f",
+                    "Step %d - loss=%.4f acc=%.3f grad_norm=%.4f",
                     int(state.step),
-                    batch_metrics["loss"],
-                    batch_metrics["accuracy"],
+                    float(jax.device_get(batch_metrics["loss"])),
+                    float(jax.device_get(batch_metrics["accuracy"])),
+                    float(jax.device_get(batch_metrics["grad_norm"])),
                 )
-        return state, self._aggregate_metrics(metrics)
+        aggregated = self._aggregate_metrics(metrics)
+        if "loss" not in aggregated:
+            aggregated["loss"] = float("nan")
+        if "accuracy" not in aggregated:
+            aggregated["accuracy"] = float("nan")
+        if "grad_norm" not in aggregated:
+            aggregated["grad_norm"] = float("nan")
+        aggregated["num_batches"] = float(len(metrics))
+        aggregated["num_samples"] = float(num_samples)
+        return state, aggregated
 
     def _evaluate_split(
             self,
@@ -522,6 +555,15 @@ class Trainer:
             eval_step_fn,
     ) -> Dict[str, float]:
         metrics: List[Dict[str, float]] = []
+        num_samples = split.images.shape[0]
+        batch_size = self._config.evaluation_batch_size
+        num_batches = math.ceil(num_samples / batch_size)
+        self._logger.info(
+            "Evaluating split with %d samples as %d batches (batch_size=%d).",
+            num_samples,
+            num_batches,
+            batch_size,
+        )
         batch_iter = self._iterate_batches(
             split,
             batch_size=self._config.evaluation_batch_size,
@@ -530,7 +572,14 @@ class Trainer:
         )
         for batch in batch_iter:
             metrics.append(eval_step_fn(state, batch))
-        return self._aggregate_metrics(metrics)
+        aggregated = self._aggregate_metrics(metrics)
+        if "loss" not in aggregated:
+            aggregated["loss"] = float("nan")
+        if "accuracy" not in aggregated:
+            aggregated["accuracy"] = float("nan")
+        aggregated["num_batches"] = float(len(metrics))
+        aggregated["num_samples"] = float(num_samples)
+        return aggregated
 
     def _iterate_batches(
             self,
@@ -571,6 +620,53 @@ class Trainer:
             for name, values in collected.items()
             if values
         }
+
+    def _log_dataset_overview(
+            self,
+            train_split: DatasetSplit,
+            validation_split: DatasetSplit | None,
+            test_split: DatasetSplit | None,
+    ) -> None:
+        """Log dataset sizes and derived batch counts for transparency."""
+
+        def _split_size(split: DatasetSplit | None) -> int:
+            return int(split.images.shape[0]) if split is not None else 0
+
+        train_size = _split_size(train_split)
+        val_size = _split_size(validation_split)
+        test_size = _split_size(test_split)
+
+        self._logger.info(
+            "Dataset summary - train=%d samples, validation=%d, test=%d",
+            train_size,
+            val_size,
+            test_size,
+        )
+
+        train_batches = math.ceil(train_size / self._config.batch_size)
+        eval_batch_size = self._config.evaluation_batch_size
+        val_batches = math.ceil(val_size / eval_batch_size) if val_size > 0 else 0
+        test_batches = math.ceil(test_size / eval_batch_size) if test_size > 0 else 0
+
+        self._logger.info(
+            "Training will run for %d epochs with %d batches per epoch (batch_size=%d).",
+            self._config.num_epochs,
+            train_batches,
+            self._config.batch_size,
+        )
+
+        if val_size > 0:
+            self._logger.info(
+                "Validation evaluation uses batch_size=%d resulting in %d batches per epoch.",
+                eval_batch_size,
+                val_batches,
+            )
+        if test_size > 0 and self._config.evaluate_on_test:
+            self._logger.info(
+                "Test evaluation uses batch_size=%d resulting in %d batches.",
+                eval_batch_size,
+                test_batches,
+            )
 
     def _compute_metrics(
             self,

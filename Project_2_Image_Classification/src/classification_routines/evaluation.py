@@ -354,8 +354,8 @@ class ClassificationRunner:
             params: Mapping[str, Any],
             images: np.ndarray,
     ) -> Mapping[str, np.ndarray]:
-        from Project_2_Image_Classification.src.models.building_blocks.convolutional import ConvBlock
-        from Project_2_Image_Classification.src.models.building_blocks.dense import DenseBlock
+        from Project_2_Image_Classification.src.models.building_blocks.convolution_layer import ConvBlock
+        from Project_2_Image_Classification.src.models.building_blocks.dense_layer import DenseBlock
 
         variables = {"params": params}
         capture_fn = lambda module, _: isinstance(module, (ConvBlock, DenseBlock))  # noqa: E731
