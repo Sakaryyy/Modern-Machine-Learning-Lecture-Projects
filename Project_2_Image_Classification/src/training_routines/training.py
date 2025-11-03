@@ -24,6 +24,10 @@ from Project_2_Image_Classification.src.training_routines.learning_rate_schedule
 from Project_2_Image_Classification.src.training_routines.loss_function import LossConfig, LossFunction, \
     resolve_loss_function
 from Project_2_Image_Classification.src.training_routines.optimizers import OptimizerConfig, create_optimizer
+from Project_2_Image_Classification.src.utils.data_augmentation.augmentor import (
+    DataAugmentationConfig,
+    ImageAugmenter,
+)
 from Project_2_Image_Classification.src.utils.logging import get_logger
 from Project_2_Image_Classification.src.visualization.style import PlotStyleConfig
 from Project_2_Image_Classification.src.visualization.training_vis import TrainingVisualizer, TrainingVisualizerConfig
@@ -67,6 +71,9 @@ class TrainerConfig:
     metrics:
         Tuple listing the metrics that should be visualised.  The trainer always
         records ``loss`` and ``accuracy``.
+    augmentation:
+        Configuration describing how stochastic data augmentation should be
+        applied to the training batches.
     """
 
     output_dir: Path
@@ -81,6 +88,7 @@ class TrainerConfig:
     evaluate_on_test: bool = True
     style_config: PlotStyleConfig | None = None
     metrics: Sequence[str] = ("loss", "accuracy")
+    augmentation: DataAugmentationConfig = field(default_factory=DataAugmentationConfig)
 
     def __post_init__(self) -> None:
         if self.num_epochs <= 0:
@@ -93,6 +101,11 @@ class TrainerConfig:
             raise ValueError("'log_every' must be a positive integer.")
         if not isinstance(self.metrics, Sequence) or not self.metrics:
             raise ValueError("'metrics' must be a non-empty sequence of metric identifiers.")
+        if not isinstance(self.augmentation, DataAugmentationConfig):
+            if isinstance(self.augmentation, Mapping):
+                self.augmentation = DataAugmentationConfig(**dict(self.augmentation))
+            else:
+                raise TypeError("'augmentation' must be a mapping or DataAugmentationConfig instance.")
 
     @property
     def evaluation_batch_size(self) -> int:
@@ -117,6 +130,8 @@ class TrainerConfig:
             data["style_config"] = PlotStyleConfig(**data["style_config"])
         if "metrics" in data and not isinstance(data["metrics"], Sequence):
             raise TypeError("'metrics' must be provided as a sequence of metric names.")
+        if "augmentation" in data and not isinstance(data["augmentation"], DataAugmentationConfig):
+            data["augmentation"] = DataAugmentationConfig(**data["augmentation"])
         return cls(**data)
 
     def to_dict(self) -> Dict[str, object]:
@@ -197,6 +212,11 @@ class Trainer:
                 style_config=self._config.style_config,
             )
         )
+        self._augmenter = (
+            ImageAugmenter(self._config.augmentation)
+            if self._config.augmentation.enabled
+            else None
+        )
         self._trainer_config_path = self._persist_trainer_config()
 
         self._logger.info(
@@ -205,6 +225,8 @@ class Trainer:
             self._config.batch_size,
             self._config.evaluation_batch_size,
         )
+        if self._augmenter is not None:
+            self._logger.info("Advanced data augmentation is enabled for training batches.")
 
     # ------------------------------------------------------------------
     # Public API
@@ -317,6 +339,14 @@ class Trainer:
         except ValueError:
             self._logger.warning(
                 "Learning-rate curve could not be generated because the history lacks a learning_rate column.")
+
+        for metric in self._config.metrics:
+            try:
+                distribution_path = self._visualizer.save_metric_distribution(history_df, metric)
+            except ValueError as exc:
+                self._logger.debug("Skipping distribution plot for %s: %s", metric, exc)
+            else:
+                figure_paths[f"{metric}_distribution"] = distribution_path
 
         checkpoint_path = self._save_checkpoint(state)
 
@@ -438,13 +468,21 @@ class Trainer:
             train_step_fn,
     ) -> tuple[TrainingState, Dict[str, float]]:
         metrics: List[Dict[str, float]] = []
+        shuffle_rng = rng
+        augmentation_rng: jax.Array | None = None
+        if self._augmenter is not None:
+            shuffle_rng, augmentation_rng = jax.random.split(rng)
+
         batch_iter = self._iterate_batches(
             split,
             batch_size=self._config.batch_size,
             shuffle=True,
-            rng=rng,
+            rng=shuffle_rng,
         )
         for step, batch in enumerate(batch_iter, start=1):
+            if self._augmenter is not None and augmentation_rng is not None:
+                augmentation_rng, batch_rng = jax.random.split(augmentation_rng)
+                batch["images"] = self._augmenter(batch_rng, batch["images"])
             state, batch_metrics = train_step_fn(state, batch)
             metrics.append(batch_metrics)
             if step % self._config.log_every == 0:

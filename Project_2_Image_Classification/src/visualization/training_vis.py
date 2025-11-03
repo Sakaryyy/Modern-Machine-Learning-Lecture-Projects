@@ -118,6 +118,79 @@ class TrainingVisualizer:
         self._logger.info("Saved learning-rate schedule to %s", output_path)
         return output_path
 
+    def save_metric_distribution(
+            self,
+            history: pd.DataFrame,
+            metric: str,
+            *,
+            filename: str | None = None,
+    ) -> Path:
+        """Persist a violin/box plot comparing train and validation distributions."""
+
+        train_column = f"train_{metric}"
+        val_column = f"validation_{metric}"
+        available_columns = [column for column in (train_column, val_column) if column in history]
+        if not available_columns:
+            raise ValueError(f"No columns present for metric '{metric}' in history DataFrame.")
+
+        filename = filename or f"{metric}_distribution.png"
+        df = history.copy()
+        if "epoch" not in df.columns:
+            df.insert(0, "epoch", range(1, len(df) + 1))
+
+        melted = df.melt(
+            id_vars="epoch",
+            value_vars=available_columns,
+            var_name="split",
+            value_name="value",
+        )
+        melted["split"] = melted["split"].str.replace("train_", "Train ", regex=False)
+        melted["split"] = melted["split"].str.replace("validation_", "Validation ", regex=False)
+
+        with self._styler.context():
+            fig, ax = plt.subplots(figsize=(6, 4))
+            sns.violinplot(data=melted, x="split", y="value", inner="quartile", ax=ax)
+            sns.swarmplot(data=melted, x="split", y="value", color="black", size=3, ax=ax)
+            ax.set_xlabel("Dataset split")
+            ax.set_ylabel(metric.replace("_", " ").title())
+            ax.set_title(f"Distribution of {metric.replace('_', ' ')}")
+            sns.despine()
+            output_path = self._save_figure(fig, filename)
+
+        self._logger.info("Saved %s distribution plot to %s", metric, output_path)
+        return output_path
+
+    def save_metric_correlation(
+            self,
+            history: pd.DataFrame,
+            metrics: Sequence[str],
+            *,
+            filename: str = "metric_correlation_heatmap.png",
+    ) -> Path:
+        """Visualise the correlation structure across recorded metrics."""
+
+        columns: list[str] = []
+        for metric in metrics:
+            for prefix in ("train_", "validation_"):
+                candidate = f"{prefix}{metric}"
+                if candidate in history.columns:
+                    columns.append(candidate)
+
+        unique_columns = list(dict.fromkeys(columns))
+        if len(unique_columns) < 2:
+            raise ValueError("At least two metric columns are required to compute correlations.")
+
+        correlation = history[unique_columns].corr()
+
+        with self._styler.context():
+            fig, ax = plt.subplots(figsize=(5, 4))
+            sns.heatmap(correlation, annot=True, fmt=".2f", cmap="coolwarm", ax=ax, vmin=-1, vmax=1)
+            ax.set_title("Metric correlation heatmap")
+            output_path = self._save_figure(fig, filename)
+
+        self._logger.info("Saved metric correlation heatmap to %s", output_path)
+        return output_path
+
     # ------------------------------------------------------------------
     # Internal utilities
     # ------------------------------------------------------------------

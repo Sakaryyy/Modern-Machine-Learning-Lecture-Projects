@@ -80,6 +80,7 @@ class TrainingDefaults:
     scheduler_kwargs: Mapping[str, float] = field(default_factory=lambda: {"warmup_steps": 500, "alpha": 0.0})
     loss: str = "cross_entropy"
     metrics: tuple[str, ...] = ("loss", "accuracy")
+    use_data_augmentation: bool = True
 
 
 @dataclass(slots=True)
@@ -124,12 +125,10 @@ class AblationStudyConfig:
 
     parameters: Mapping[str, List[Any]] = field(
         default_factory=lambda: {
-            "hidden_units": [64, 128, 256, 512, 1024, 2048],
-            "dropout_rate": [0.0, 0.1, 0.2, 0.3, 0.4, 0.5],
             "optimizer": ["adamw", "adam", "sgd", "rmsprop"],
-            "learning_rate": [1e-4, 5e-4, 1e-3, 2e-3, 5e-3],
+            "learning_rate": [1e-4, 5e-4, 1e-3, 5e-3],
             "weight_decay": [0.0, 1e-5, 1e-4, 5e-4],
-            "momentum": [0.0, 0.8, 0.9],
+            "momentum": [0.8, 0.85, 0.9],
             "scheduler": [
                 "constant",
                 "cosine_decay",
@@ -214,7 +213,7 @@ class HyperparameterSearchConfig:
                     {"features": 384, "dropout_rate": 0.3, "activation": "relu"},
                 ],
             ],
-            "learning_rate": [5e-4, 1e-3, 2e-3, 3e-3],
+            "learning_rate": [5e-4, 1e-3, 5e-3],
             "weight_decay": [1e-5, 1e-4, 5e-4],
             "optimizer": ["adamw", "adam"],
             "scheduler": ["cosine_decay", "linear_warmup_cosine_decay"],

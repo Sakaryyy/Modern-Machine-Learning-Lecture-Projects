@@ -181,21 +181,36 @@ class CLIApplication:
         config_data = self._load_config_file(args.config)
         trainer_config = self._build_trainer_config(args, config_data)
         model_overrides = self._extract_model_config(config_data)
-        base_model_config = self._resolve_model_config(args.model, dataset, model_overrides)
+
+        baseline_model_name = self._project_config.ablation.baseline_model or "baseline"
+
+        def baseline_builder(overrides: Mapping[str, Any]):
+            merged = dict(overrides)
+            return self._build_model(baseline_model_name, dataset, merged)
+
+        experiment_model_name = "cnn"
+
+        base_model_config = self._resolve_model_config(
+            experiment_model_name,
+            dataset,
+            model_overrides,
+        )
         base_overrides = dict(model_overrides)
 
-        def model_builder(overrides: Mapping[str, Any]) -> tuple[Any, Any]:
+        def experiment_builder(overrides: Mapping[str, Any]):
             merged = dict(base_overrides)
             merged.update(overrides)
-            return self._build_model(args.model, dataset, merged)
+            return self._build_model(experiment_model_name, dataset, merged)
 
         manager = HyperparameterExperimentManager(
-            self._project_config,
-            dataset,
-            args.model,
-            model_builder,
-            base_model_config,
-            trainer_config,
+            project_config=self._project_config,
+            dataset=dataset,
+            experiment_model_name=experiment_model_name,
+            experiment_model_builder=experiment_builder,
+            experiment_base_model_config=base_model_config,
+            base_trainer_config=trainer_config,
+            baseline_model_name=baseline_model_name,
+            baseline_model_builder=baseline_builder,
         )
 
         if args.mode in {"ablation", "both"}:
@@ -314,6 +329,19 @@ class CLIApplication:
             default=None,
             help="Learning-rate scheduler to use (e.g. constant, cosine_decay).",
         )
+        training_parser.add_argument(
+            "--enable-data-augmentation",
+            dest="data_augmentation",
+            action="store_true",
+            help="Enable the stochastic data augmentation pipeline during training.",
+        )
+        training_parser.add_argument(
+            "--disable-data-augmentation",
+            dest="data_augmentation",
+            action="store_false",
+            help="Disable all stochastic data augmentation steps during training.",
+        )
+        training_parser.set_defaults(data_augmentation=None)
 
         classification_parser = subparsers.add_parser(
             "classification",
@@ -395,6 +423,19 @@ class CLIApplication:
             default=None,
             help="Directory where training artefacts will be stored.",
         )
+        experiments_parser.add_argument(
+            "--enable-data-augmentation",
+            dest="data_augmentation",
+            action="store_true",
+            help="Enable data augmentation for all experiment runs.",
+        )
+        experiments_parser.add_argument(
+            "--disable-data-augmentation",
+            dest="data_augmentation",
+            action="store_false",
+            help="Disable data augmentation for experiment runs.",
+        )
+        experiments_parser.set_defaults(data_augmentation=None)
 
         return parser
 
@@ -522,6 +563,14 @@ class CLIApplication:
         if "metrics" not in trainer_dict and defaults.metrics:
             trainer_dict["metrics"] = list(defaults.metrics)
 
+        augmentation_dict = dict(trainer_dict.get("augmentation", {}))
+        cli_augmentation = getattr(args, "data_augmentation", None)
+        if cli_augmentation is not None:
+            augmentation_dict["enabled"] = bool(cli_augmentation)
+        else:
+            augmentation_dict.setdefault("enabled", defaults.use_data_augmentation)
+        trainer_dict["augmentation"] = augmentation_dict
+
         return TrainerConfig.from_dict(trainer_dict)
 
     def _extract_model_config(self, config_data: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -616,7 +665,6 @@ class CLIApplication:
         config = self._resolve_model_config(model_name, dataset, model_config)
 
         if normalized_name == "baseline":
-            self._logger.info("Constructed baseline model with %d hidden units.", config.hidden_units)
             return create_baseline_model(config), config
 
         if normalized_name in {"cnn", "image_classifier"}:

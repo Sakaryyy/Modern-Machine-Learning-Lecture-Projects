@@ -34,19 +34,29 @@ class HyperparameterExperimentManager:
             self,
             project_config: ProjectConfig,
             dataset: PreparedDataset,
-            model_name: str,
-            model_builder: ModelBuilder,
-            base_model_config: Mapping[str, Any],
+            experiment_model_name: str,
+            experiment_model_builder: Callable[[Mapping[str, Any]], tuple[Any, Any]],
+            experiment_base_model_config: Mapping[str, Any],
             base_trainer_config: TrainerConfig,
+            *,
+            baseline_model_name: str,
+            baseline_model_builder: Callable[[Mapping[str, Any]], tuple[Any, Any]],
     ) -> None:
         self._config = project_config
         self._dataset = dataset
-        self._model_name = model_name
-        self._model_builder = model_builder
-        if hasattr(base_model_config, "__dataclass_fields__"):
-            self._base_model_config = asdict(base_model_config)
+
+        # model used for ablations / grid search
+        self._experiment_model_name = experiment_model_name
+        self._experiment_model_builder = experiment_model_builder
+        if hasattr(experiment_base_model_config, "__dataclass_fields__"):
+            self._experiment_base_model_config = asdict(experiment_base_model_config)
         else:
-            self._base_model_config = dict(base_model_config)
+            self._experiment_base_model_config = dict(experiment_base_model_config)
+
+        # model used for the "baseline" line
+        self._baseline_model_name = baseline_model_name
+        self._baseline_model_builder = baseline_model_builder
+
         self._base_trainer_config = base_trainer_config
         self._logger = get_logger(self.__class__.__name__)
 
@@ -68,13 +78,15 @@ class HyperparameterExperimentManager:
         )
         baseline_records = self._run_baseline(study_root, ablation_cfg.repeats, metric_name)
         results.extend(baseline_records)
+        parameter_amount = len(ablation_cfg.parameters.items())
 
-        for parameter, values in ablation_cfg.parameters.items():
-            for value in values:
+        for p, (parameter, values) in enumerate(ablation_cfg.parameters.items()):
+            values_amount = len(values)
+            for v, value in enumerate(values):
                 for repeat in range(ablation_cfg.repeats):
                     overrides = {parameter: value}
                     model_overrides, trainer_overrides = self._split_overrides(overrides)
-                    run_name = f"{parameter}_{value}_rep{repeat + 1}"
+                    run_name = f"{parameter}_{value}_rep{repeat + 1}_parameter_run_{p}-{parameter_amount}_value_run_{v}-{values_amount}"
                     self._logger.info(
                         "Ablation run %s (repeat %d) with overrides %s.",
                         run_name,
@@ -82,7 +94,9 @@ class HyperparameterExperimentManager:
                         overrides,
                     )
                     trainer_config = self._prepare_trainer_config(run_name, trainer_overrides, study_root, repeat)
-                    model, resolved_config = self._model_builder(self._combine_model_config(model_overrides))
+                    model, resolved_config = self._experiment_model_builder(
+                        self._combine_experiment_model_config(model_overrides)
+                    )
                     result = self._train_model(model, trainer_config, resolved_config)
                     metric_value = self._extract_metric(result, metric_name)
                     self._logger.info(
@@ -105,6 +119,12 @@ class HyperparameterExperimentManager:
         )
         visualizer.save_summary_table(summary)
         visualizer.save_metric_overview(summary, metric_name)
+        try:
+            distribution_paths = visualizer.save_parameter_boxplots(raw_frame, metric_name)
+            for parameter, path in distribution_paths.items():
+                self._logger.info("Saved ablation distribution for %s to %s", parameter, path)
+        except ValueError as exc:
+            self._logger.warning("Could not create ablation distribution plots: %s", exc)
         self._copy_best_checkpoint(raw_frame, metric_name, study_root, prefix="ablation")
         return study_root
 
@@ -121,7 +141,9 @@ class HyperparameterExperimentManager:
             run_name = self._format_combination_name(combination, index)
             self._logger.info("Hyper-parameter run %s", run_name)
             trainer_config = self._prepare_trainer_config(run_name, trainer_overrides, study_root, repeat_index=0)
-            model, resolved_config = self._model_builder(self._combine_model_config(model_overrides))
+            model, resolved_config = self._experiment_model_builder(
+                self._combine_experiment_model_config(model_overrides)
+            )
             result = self._train_model(model, trainer_config, resolved_config)
             metric_value = self._extract_metric(result, metric_name)
             self._logger.info(
@@ -149,6 +171,12 @@ class HyperparameterExperimentManager:
         visualizer.save_ranked_results(frame, "metric")
         if {"trainer__learning_rate", "trainer__weight_decay"}.issubset(frame.columns):
             visualizer.save_metric_heatmap(frame, "metric", "trainer__learning_rate", "trainer__weight_decay")
+        visualizer.save_metric_distribution(frame, "metric")
+        try:
+            visualizer.save_numeric_pairplot(frame, "metric")
+        except ValueError as exc:
+            self._logger.warning("Skipping hyper-parameter pairplot: %s", exc)
+        visualizer.save_top_configurations(frame, "metric")
         self._copy_best_checkpoint(frame, "metric", study_root, prefix="hyperparameter")
         return study_root
 
@@ -165,14 +193,19 @@ class HyperparameterExperimentManager:
         model_overrides: Dict[str, Any] = {}
         trainer_overrides: Dict[str, Any] = {}
         for key, value in overrides.items():
-            if key in self._base_model_config:
+            if key in self._experiment_base_model_config:
                 model_overrides[key] = value
             else:
                 trainer_overrides[key] = value
         return model_overrides, trainer_overrides
 
     def _combine_model_config(self, overrides: Mapping[str, Any]) -> Mapping[str, Any]:
-        config = {**self._base_model_config}
+        config = {**self._experiment_base_model_config}
+        config.update(overrides)
+        return config
+
+    def _combine_experiment_model_config(self, overrides: Mapping[str, Any]) -> Mapping[str, Any]:
+        config = {**self._experiment_base_model_config}
         config.update(overrides)
         return config
 
@@ -223,10 +256,22 @@ class HyperparameterExperimentManager:
         config = replace(config, optimizer=optimizer, scheduler=scheduler, seed=seed, output_dir=output_dir)
         return config
 
-    def _train_model(self, model: Any, trainer_config: TrainerConfig, resolved_config: Any):
+    def _train_model(
+            self,
+            model: Any,
+            trainer_config: TrainerConfig,
+            resolved_config: Any,
+            *,
+            model_name: str | None = None,
+    ):
         trainer = Trainer(model, trainer_config)
         result = trainer.train(self._dataset)
-        self._persist_model_definition(trainer_config.output_dir, resolved_config, trainer_config)
+        self._persist_model_definition(
+            trainer_config.output_dir,
+            resolved_config,
+            trainer_config,
+            model_name=model_name,
+        )
         return result
 
     def _run_baseline(self, study_root: Path, repeats: int, metric_name: str) -> list[Dict[str, Any]]:
@@ -234,10 +279,16 @@ class HyperparameterExperimentManager:
 
         baseline_records: list[Dict[str, Any]] = []
         for repeat in range(repeats):
-            run_name = f"baseline_rep{repeat + 1}"
+            run_name = f"{self._baseline_model_name}_rep{repeat + 1}"
             trainer_config = self._prepare_trainer_config(run_name, {}, study_root, repeat)
-            model, resolved_config = self._model_builder(self._combine_model_config({}))
-            result = self._train_model(model, trainer_config, resolved_config)
+            model, resolved_config = self._baseline_model_builder({})
+
+            result = self._train_model(
+                model,
+                trainer_config,
+                resolved_config,
+                model_name=self._baseline_model_name,
+            )
             metric_value = self._extract_metric(result, metric_name)
             self._logger.info(
                 "Baseline run %s completed with %s=%.4f",
@@ -257,12 +308,22 @@ class HyperparameterExperimentManager:
             )
         return baseline_records
 
-    def _persist_model_definition(self, output_dir: Path, model_config: Any, trainer_config: TrainerConfig) -> None:
+    def _persist_model_definition(
+            self,
+            output_dir: Path,
+            model_config: Any,
+            trainer_config: TrainerConfig,
+            *,
+            model_name: str | None = None,
+    ) -> None:
         definition_path = output_dir / self.MODEL_DEFINITION_FILENAME
-        model_config_dict = asdict(model_config) if hasattr(model_config, "__dataclass_fields__") else dict(
-            model_config)
+        model_config_dict = (
+            asdict(model_config)
+            if hasattr(model_config, "__dataclass_fields__")
+            else dict(model_config)
+        )
         payload = {
-            "model_name": self._model_name,
+            "model_name": model_name or self._experiment_model_name,
             "config": model_config_dict,
             "trainer": trainer_config.to_dict(),
             "loss": asdict(trainer_config.loss),

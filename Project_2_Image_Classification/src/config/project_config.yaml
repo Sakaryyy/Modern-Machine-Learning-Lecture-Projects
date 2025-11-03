@@ -68,7 +68,6 @@ ablation:
       - 256
       - 512
       - 1024
-      - 2048
     dropout_rate:
       - 0.0
       - 0.1
@@ -85,7 +84,6 @@ ablation:
       - 0.0001
       - 0.0005
       - 0.001
-      - 0.002
       - 0.005
     weight_decay:
       - 0.0
@@ -93,8 +91,7 @@ ablation:
       - 0.0001
       - 0.0005
     momentum:
-      - 0.0
-      - 0.8
+      - 0.85
       - 0.9
     scheduler:
       - constant
@@ -225,7 +222,7 @@ hyperparameter_search:
       - 0.0005
       - 0.001
       - 0.002
-      - 0.003
+      - 0.005
     weight_decay:
       - 0.00001
       - 0.0001

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Iterator, Mapping, MutableMapping, Sequence
 
 import jax
+import jax.nn as jnn
 import jax.numpy as jnp
 import numpy as np
 import pandas as pd
@@ -100,6 +101,22 @@ class ClassificationRunner:
         self._visualizer.save_confusion_matrix(confusion, class_names)
         self._visualizer.save_metrics_table(metrics)
 
+        images_np = np.asarray(test_split.images)
+        labels_np = predictions["labels"].astype(int)
+        preds_np = predictions["predictions"].astype(int)
+        probabilities = predictions.get("probabilities")
+
+        self._visualizer.save_prediction_gallery(
+            images_np,
+            labels_np,
+            preds_np,
+            class_names,
+            probabilities=probabilities,
+        )
+        self._visualizer.save_per_class_accuracy(labels_np, preds_np, class_names)
+        if probabilities is not None:
+            self._visualizer.save_confidence_histogram(probabilities, labels_np, preds_np)
+
         if self._config.save_predictions:
             self._save_predictions(predictions, class_names)
 
@@ -159,15 +176,17 @@ class ClassificationRunner:
         total_samples = 0
         all_predictions: list[int] = []
         all_labels: list[int] = []
+        all_probabilities: list[np.ndarray] = []
 
         @jax.jit
-        def forward(batch: Batch) -> tuple[jnp.ndarray, jnp.ndarray]:
+        def forward(batch: Batch) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
             logits = model.apply({"params": params}, batch["images"], train=False)
             batch_loss = loss_fn(logits, batch["labels"])
-            return logits, batch_loss
+            probs = jnn.softmax(logits, axis=-1)
+            return logits, batch_loss, probs
 
         for batch in batches:
-            logits, batch_loss = forward(batch)
+            logits, batch_loss, probs = forward(batch)
             preds = jnp.argmax(logits, axis=-1)
             labels = batch["labels"]
 
@@ -178,10 +197,18 @@ class ClassificationRunner:
 
             all_predictions.extend(np.asarray(preds).tolist())
             all_labels.extend(np.asarray(labels).tolist())
+            all_probabilities.append(np.asarray(probs))
 
         metrics["loss"] /= total_samples
         metrics["accuracy"] /= total_samples
-        return metrics, {"predictions": np.array(all_predictions), "labels": np.array(all_labels)}
+        probabilities = np.concatenate(all_probabilities, axis=0) if all_probabilities else None
+        prediction_dict = {
+            "predictions": np.array(all_predictions),
+            "labels": np.array(all_labels),
+        }
+        if probabilities is not None:
+            prediction_dict["probabilities"] = probabilities
+        return metrics, prediction_dict
 
     def _iterate_batches(
             self,
@@ -200,12 +227,16 @@ class ClassificationRunner:
         path = self._output_dir / "predictions.csv"
         labels = predictions["labels"].astype(int)
         preds = predictions["predictions"].astype(int)
-        frame = pd.DataFrame({
+        data = {
             "true_label": [class_names[label] for label in labels],
             "predicted_label": [class_names[label] for label in preds],
             "true_index": labels,
             "predicted_index": preds,
-        })
+        }
+        if "probabilities" in predictions:
+            confidences = predictions["probabilities"][np.arange(len(preds)), preds]
+            data["confidence"] = confidences
+        frame = pd.DataFrame(data)
         frame.to_csv(path, index=False)
         self._logger.info("Saved individual predictions to %s", path)
 
