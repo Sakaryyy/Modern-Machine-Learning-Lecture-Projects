@@ -12,9 +12,6 @@ from typing import Any, Mapping, Sequence
 import jax.numpy as jnp
 import yaml
 
-from Project_2_Image_Classification.src.ablation_routines.hyperparameter_search import (
-    HyperparameterExperimentManager,
-)
 from Project_2_Image_Classification.src.classification_routines.evaluation import (
     ClassificationConfig,
     ClassificationRunner,
@@ -22,6 +19,9 @@ from Project_2_Image_Classification.src.classification_routines.evaluation impor
 from Project_2_Image_Classification.src.config.config import ConfigManager, ProjectConfig
 from Project_2_Image_Classification.src.data_analysis.analysis import AnalysisConfig, CIFAR10DatasetAnalyzer
 from Project_2_Image_Classification.src.data_loading.data_load_and_save import CIFAR10DataManager, PreparedDataset
+from Project_2_Image_Classification.src.hyperparameter_ablation_experiments.hyperparameter_and_ablation_routine import (
+    HyperparameterExperimentManager,
+)
 from Project_2_Image_Classification.src.models import (
     BaselineModelConfig,
     ImageClassifierConfig,
