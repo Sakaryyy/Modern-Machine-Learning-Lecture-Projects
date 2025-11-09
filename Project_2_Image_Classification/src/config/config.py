@@ -126,16 +126,15 @@ class AblationStudyConfig:
     parameters: Mapping[str, List[Any]] = field(
         default_factory=lambda: {
             "optimizer": ["adamw", "adam", "sgd", "rmsprop"],
-            "learning_rate": [1e-4, 5e-4, 1e-3, 5e-3],
-            "weight_decay": [0.0, 1e-5, 1e-4, 5e-4],
-            "momentum": [0.8, 0.85, 0.9],
+            "learning_rate": [1e-3, 5e-3, 1e-2],
+            "weight_decay": [0.0, 1e-4, 5e-4],
+            "momentum": [0.8, 0.9],
             "scheduler": [
                 "constant",
                 "cosine_decay",
                 "linear_warmup_cosine_decay",
                 "exponential_decay",
-            ],
-            "warmup_steps": [0, 250, 500],
+            ]
         }
     )
     baseline_model: str = "baseline"
@@ -166,13 +165,6 @@ class HyperparameterSearchConfig:
             "conv_blocks": [
                 [
                     {"features": 32, "kernel_size": (3, 3), "pooling_type": "max", "dropout_rate": 0.1},
-                ],
-                [
-                    {"features": 32, "kernel_size": (3, 3), "pooling_type": "max", "dropout_rate": 0.1},
-                    {"features": 64, "kernel_size": (3, 3), "pooling_type": "max", "dropout_rate": 0.2},
-                ],
-                [
-                    {"features": 32, "kernel_size": (3, 3), "pooling_type": "max", "dropout_rate": 0.1},
                     {"features": 64, "kernel_size": (3, 3), "pooling_type": "max", "dropout_rate": 0.2},
                     {"features": 128, "kernel_size": (3, 3), "pooling_type": "max", "dropout_rate": 0.3},
                 ],
@@ -189,16 +181,8 @@ class HyperparameterSearchConfig:
                     {"features": 256, "kernel_size": (3, 3), "pooling_type": "max", "dropout_rate": 0.3},
                     {"features": 512, "kernel_size": (3, 3), "pooling_type": "max", "dropout_rate": 0.4},
                 ],
-                [
-                    {"features": 64, "kernel_size": (5, 5), "pooling_type": "avg", "dropout_rate": 0.15},
-                    {"features": 128, "kernel_size": (3, 3), "pooling_type": "max", "dropout_rate": 0.25},
-                    {"features": 256, "kernel_size": (3, 3), "pooling_type": "max", "dropout_rate": 0.35},
-                ],
             ],
             "dense_blocks": [
-                [
-                    {"features": 256, "dropout_rate": 0.5, "activation": "relu"},
-                ],
                 [
                     {"features": 512, "dropout_rate": 0.4, "activation": "relu"},
                     {"features": 256, "dropout_rate": 0.3, "activation": "relu"},
@@ -208,15 +192,11 @@ class HyperparameterSearchConfig:
                     {"features": 256, "dropout_rate": 0.3, "activation": "relu"},
                     {"features": 128, "dropout_rate": 0.2, "activation": "relu"},
                 ],
-                [
-                    {"features": 768, "dropout_rate": 0.4, "activation": "relu"},
-                    {"features": 384, "dropout_rate": 0.3, "activation": "relu"},
-                ],
             ],
-            "learning_rate": [5e-4, 1e-3, 5e-3],
-            "weight_decay": [1e-5, 1e-4, 5e-4],
-            "optimizer": ["adamw", "adam"],
-            "scheduler": ["cosine_decay", "linear_warmup_cosine_decay"],
+            "learning_rate": [1e-3, 5e-3],
+            "weight_decay": [1e-4, 5e-4],
+            "optimizer": ["adamw", "rmsprop"],
+            "scheduler": ["cosine_decay", "constant"],
         }
     )
     evaluation_metric: str = "validation_accuracy"

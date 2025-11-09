@@ -1,10 +1,10 @@
 paths:
-  data_dir: /workspace/Modern-Machine-Learning-Lecture-Projects/Project_2_Image_Classification/data
-  outputs_dir: /workspace/Modern-Machine-Learning-Lecture-Projects/Project_2_Image_Classification/outputs
-  configs_dir: /workspace/Modern-Machine-Learning-Lecture-Projects/Project_2_Image_Classification/outputs/configs
-  models_dir: /workspace/Modern-Machine-Learning-Lecture-Projects/Project_2_Image_Classification/outputs/models
-  analysis_dir: /workspace/Modern-Machine-Learning-Lecture-Projects/Project_2_Image_Classification/outputs/analysis
-  figures_dir: /workspace/Modern-Machine-Learning-Lecture-Projects/Project_2_Image_Classification/outputs/figures
+  data_dir: /mnt/a/Modern_Machine_Learning_Lecture/Project_2_Image_Classification/data
+  outputs_dir: /mnt/a/Modern_Machine_Learning_Lecture/Project_2_Image_Classification/outputs
+  configs_dir: /mnt/a/Modern_Machine_Learning_Lecture/Project_2_Image_Classification/outputs/configs
+  models_dir: /mnt/a/Modern_Machine_Learning_Lecture/Project_2_Image_Classification/outputs/models
+  analysis_dir: /mnt/a/Modern_Machine_Learning_Lecture/Project_2_Image_Classification/outputs/analysis
+  figures_dir: /mnt/a/Modern_Machine_Learning_Lecture/Project_2_Image_Classification/outputs/figures
 training:
   num_epochs: 50
   batch_size: 128
@@ -21,6 +21,7 @@ training:
   metrics:
     - loss
     - accuracy
+  use_data_augmentation: true
 baseline_defaults:
   hidden_units: 512
   activation: relu
@@ -41,21 +42,21 @@ cnn_defaults:
         - 3
         - 3
       pooling_type: max
-      dropout_rate: 0.1
+      dropout_rate: 0.2
     - features: 128
       kernel_size:
         - 3
         - 3
       pooling_type: max
-      dropout_rate: 0.1
+      dropout_rate: 0.3
   dense_blocks:
     - features: 256
-      dropout_rate: 0.3
+      dropout_rate: 0.5
       activation: relu
     - features: 128
       dropout_rate: 0.3
       activation: relu
-  classifier_dropout: 0.3
+  classifier_dropout: 0.5
   global_average_pooling: true
   classifier_kernel_init: he_normal
   classifier_bias_init: zeros
@@ -64,20 +65,16 @@ ablation:
   parameters:
     optimizer:
       - adamw
-      - adam
       - sgd
       - rmsprop
     learning_rate:
-      - 0.0001
-      - 0.0005
       - 0.001
       - 0.005
+      - 0.01
     weight_decay:
-      - 0.00001
       - 0.0001
       - 0.0005
     momentum:
-      - 0.8
       - 0.85
       - 0.9
     scheduler:
@@ -96,6 +93,18 @@ ablation:
 hyperparameter_search:
   search_space:
     conv_blocks:
+      - - features: 32
+          kernel_size:
+            - 3
+            - 3
+          pooling_type: max
+          dropout_rate: 0.1
+        - features: 64
+          kernel_size:
+            - 3
+            - 3
+          pooling_type: max
+          dropout_rate: 0.2
       - - features: 32
           kernel_size:
             - 3
@@ -132,6 +141,12 @@ hyperparameter_search:
             - 3
           pooling_type: max
           dropout_rate: 0.3
+        - features: 256
+          kernel_size:
+            - 3
+            - 3
+          pooling_type: max
+          dropout_rate: 0.35
       - - features: 32
           kernel_size:
             - 3
@@ -181,9 +196,6 @@ hyperparameter_search:
           pooling_type: max
           dropout_rate: 0.35
     dense_blocks:
-      - - features: 256
-          dropout_rate: 0.5
-          activation: relu
       - - features: 512
           dropout_rate: 0.4
           activation: relu
@@ -206,20 +218,18 @@ hyperparameter_search:
           dropout_rate: 0.3
           activation: relu
     learning_rate:
-      - 0.0005
       - 0.001
-      - 0.002
       - 0.005
+      - 0.01
     weight_decay:
-      - 0.00001
       - 0.0001
       - 0.0005
     optimizer:
       - adamw
-      - adam
+      - rmsprop
     scheduler:
+      - constant
       - cosine_decay
-      - linear_warmup_cosine_decay
   evaluation_metric: validation_accuracy
   max_combinations: 120
   output_subdir: hyperparameter_search
