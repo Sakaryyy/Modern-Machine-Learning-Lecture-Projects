@@ -100,6 +100,8 @@ class CLIApplication:
         config_data = self._load_config_file(args.config)
         trainer_config = self._build_trainer_config(args, config_data)
         model_config = self._extract_model_config(config_data)
+        self._logger.info("Building Training with config data: %s.\n"
+                          "Model Config: %s and args model: %s\n", trainer_config, model_config, args.model)
         try:
             model, resolved_model_config = self._build_model(args.model, dataset, model_config)
         except Exception as exc:  # pragma: no cover - defensive guard for CLI usage
@@ -150,6 +152,7 @@ class CLIApplication:
             output_directory=args.output_dir,
             save_predictions=not args.no_predictions,
         )
+        self._logger.info("Classification routine invoked with config: %s", config)
         runner = ClassificationRunner(config)
         metrics = runner.run(dataset)
         for name, value in metrics.items():

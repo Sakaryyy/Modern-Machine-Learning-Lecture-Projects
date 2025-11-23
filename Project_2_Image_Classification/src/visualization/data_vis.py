@@ -12,7 +12,11 @@ import numpy as np
 import seaborn as sns
 
 from Project_2_Image_Classification.src.utils.logging import get_logger
-from Project_2_Image_Classification.src.visualization.style import PlotStyleConfig, PlotStyler
+from Project_2_Image_Classification.src.visualization.style import (
+    PlotStyleConfig,
+    PlotStyler,
+    place_legend_below,
+)
 
 __all__ = [
     "VisualizerConfig",
@@ -202,7 +206,7 @@ class DataVisualizer:
             ax.set_xlabel("Channel")
             ax.set_ylabel("Value")
             ax.set_title("Per-channel summary statistics")
-            ax.legend(frameon=False)
+            place_legend_below(fig, ax)
             output_path = self._save_figure(fig, filename)
 
         self._logger.info("Saved channel statistics to %s", output_path)

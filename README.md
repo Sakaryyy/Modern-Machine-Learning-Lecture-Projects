@@ -166,12 +166,12 @@ Train one of the registered models (`baseline`, `cnn`). Command-specific flags i
 
 * `--model` – architecture identifier.
 * `--config` – optional YAML override file (see above).
-* `--output-dir` – directory for artefacts; defaults to `outputs/training_runs/<model>_<timestamp>/`.
+* `--output-dir` – directory for artefacts, defaults to `outputs/training_runs/<model>_<timestamp>/`.
 * `--epochs`, `--batch-size`, `--eval-batch-size`, `--learning-rate`, `--optimizer`, `--scheduler` – override defaults
   without editing YAML files.
 * `--enable-data-augmentation` / `--disable-data-augmentation` – toggle the augmentation pipeline globally.
 * `--enable-{random-crop|horizontal-flip|vertical-flip|rotation|color-jitter|gaussian-noise|cutout}` and corresponding
-  `--disable-*` flags – fine-grained switches for individual augmentation steps.
+  `--disable-*` flags – switches for individual augmentation steps.
 
 Each training run saves checkpoints (`checkpoints/final_params.msgpack`), a model definition (`model_definition.yaml`),
 training curves/figures, Excel & CSV histories, and a JSON metrics summary inside the chosen output directory.
@@ -206,7 +206,7 @@ figures (split overview charts, sample grids, class distributions).
 Automate ablations and hyper-parameter sweeps over the CNN architecture:
 
 * `--mode` – choose `ablation`, `hyperparameter`, or `both` (default) to run the respective routines.
-* `--model` – starting architecture (defaults to `cnn`).
+* `--model` – starting architecture (defaults to `baseline`).
 * `--config` – YAML overrides applied to both the trainer and the experimental model template.
 * `--output-dir` – base directory for artefacts (defaults to the training run location defined in the config).
 * `--enable-data-augmentation` / `--disable-data-augmentation` plus the per-augmentation toggles listed under

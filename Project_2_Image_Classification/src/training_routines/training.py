@@ -17,6 +17,7 @@ from flax import linen as nn
 from flax import serialization
 from flax.core import FrozenDict
 from flax.training import train_state
+from tqdm.auto import tqdm
 
 from Project_2_Image_Classification.src.data_loading.data_load_and_save import DatasetSplit, PreparedDataset
 from Project_2_Image_Classification.src.training_routines.learning_rate_schedulers import LRSchedulerConfig, \
@@ -516,27 +517,57 @@ class Trainer:
             rng=shuffle_rng,
         )
         logged_augmentation_shape = False
-        for step, batch in enumerate(batch_iter, start=1):
-            if self._augmenter is not None and augmentation_rng is not None:
-                augmentation_rng, batch_rng = jax.random.split(augmentation_rng)
-                batch["images"] = self._augmenter(batch_rng, batch["images"])
-                if not logged_augmentation_shape:
-                    self._logger.debug(
-                        "Epoch %d - first augmented batch shape: %s",
-                        epoch,
-                        tuple(batch["images"].shape),
+        progress = tqdm(
+            total=num_batches,
+            desc=f"Epoch {epoch}/{self._config.num_epochs}",
+            leave=True,
+            dynamic_ncols=True,
+        )
+
+        try:
+            for step, batch in enumerate(batch_iter, start=1):
+                if self._augmenter is not None and augmentation_rng is not None:
+                    augmentation_rng, batch_rng = jax.random.split(augmentation_rng)
+                    batch["images"] = self._augmenter(batch_rng, batch["images"])
+                    if not logged_augmentation_shape:
+                        self._logger.debug(
+                            "Epoch %d - first augmented batch shape: %s",
+                            epoch,
+                            tuple(batch["images"].shape),
+                        )
+                        logged_augmentation_shape = True
+
+                state, batch_metrics = train_step_fn(state, batch)
+                metrics.append(batch_metrics)
+
+                if step % self._config.log_every == 0 or step == num_batches:
+                    loss = float(jax.device_get(batch_metrics["loss"]))
+                    accuracy = float(jax.device_get(batch_metrics["accuracy"]))
+                    grad_norm = float(jax.device_get(batch_metrics["grad_norm"]))
+
+                    progress.set_postfix(
+                        {
+                            "batch": f"{step}/{num_batches}",
+                            "loss": f"{loss:.4f}",
+                            "acc": f"{accuracy:.3f}",
+                            "grad": f"{grad_norm:.4f}",
+                        }
                     )
-                    logged_augmentation_shape = True
-            state, batch_metrics = train_step_fn(state, batch)
-            metrics.append(batch_metrics)
-            if step % self._config.log_every == 0:
-                self._logger.debug(
-                    "Step %d - loss=%.4f acc=%.3f grad_norm=%.4f",
-                    int(state.step),
-                    float(jax.device_get(batch_metrics["loss"])),
-                    float(jax.device_get(batch_metrics["accuracy"])),
-                    float(jax.device_get(batch_metrics["grad_norm"])),
-                )
+
+                    self._logger.info(
+                        "Epoch %d/%d [batch %d/%d] loss=%.4f acc=%.3f grad_norm=%.4f",
+                        epoch,
+                        self._config.num_epochs,
+                        step,
+                        num_batches,
+                        loss,
+                        accuracy,
+                        grad_norm,
+                    )
+
+                progress.update(1)
+        finally:
+            progress.close()
         aggregated = self._aggregate_metrics(metrics)
         if "loss" not in aggregated:
             aggregated["loss"] = float("nan")

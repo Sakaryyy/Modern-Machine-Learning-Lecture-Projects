@@ -23,6 +23,7 @@ from Project_2_Image_Classification.src.models import (
     create_baseline_model,
     create_image_classifier,
 )
+from Project_2_Image_Classification.src.models.building_blocks import ConvBlockConfig, DenseBlockConfig
 from Project_2_Image_Classification.src.training_routines.loss_function import LossConfig, resolve_loss_function
 from Project_2_Image_Classification.src.utils.helper import log_jax_runtime_info
 from Project_2_Image_Classification.src.utils.logging import get_logger
@@ -174,7 +175,20 @@ class ClassificationRunner:
             self._logger.info("Loaded baseline model for classification with hidden_units=%d", config.hidden_units)
             return create_baseline_model(config)
         if normalized in {"cnn", "image_classifier"}:
-            config = ImageClassifierConfig(**model_config_dict)
+            conv_blocks = [
+                block if isinstance(block, ConvBlockConfig) else ConvBlockConfig(**block)
+                for block in model_config_dict.get("conv_blocks", ())
+            ]
+            dense_blocks = [
+                block if isinstance(block, DenseBlockConfig) else DenseBlockConfig(**block)
+                for block in model_config_dict.get("dense_blocks", ())
+            ]
+            config_kwargs = dict(model_config_dict)
+            config_kwargs["conv_blocks"] = conv_blocks
+            config_kwargs["dense_blocks"] = dense_blocks
+            if "input_shape" in config_kwargs:
+                config_kwargs["input_shape"] = tuple(config_kwargs["input_shape"])
+            config = ImageClassifierConfig(**config_kwargs)
             self._logger.info(
                 "Loaded CNN classifier with %d convolutional blocks and %d dense blocks.",
                 len(config.conv_blocks),

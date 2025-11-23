@@ -6,11 +6,11 @@ paths:
   analysis_dir: /mnt/a/Modern_Machine_Learning_Lecture/Project_2_Image_Classification/outputs/analysis
   figures_dir: /mnt/a/Modern_Machine_Learning_Lecture/Project_2_Image_Classification/outputs/figures
 training:
-  num_epochs: 50
-  batch_size: 128
+  num_epochs: 100
+  batch_size: 256
   eval_batch_size: 256
   log_every: 100
-  optimizer: adamw
+  optimizer: rmsprop
   learning_rate: 0.001
   weight_decay: 0.0001
   scheduler: cosine_decay
@@ -31,29 +31,35 @@ baseline_defaults:
   bias_init: zeros
 cnn_defaults:
   conv_blocks:
-    - features: 32
-      kernel_size:
-        - 3
-        - 3
-      pooling_type: max
-      dropout_rate: 0.1
     - features: 64
       kernel_size:
         - 3
         - 3
       pooling_type: max
-      dropout_rate: 0.2
+      dropout_rate: 0.1
     - features: 128
       kernel_size:
         - 3
         - 3
       pooling_type: max
-      dropout_rate: 0.3
-  dense_blocks:
+      dropout_rate: 0.2
     - features: 256
-      dropout_rate: 0.5
+      kernel_size:
+        - 3
+        - 3
+      pooling_type: max
+      dropout_rate: 0.3
+    - features: 256
+      kernel_size:
+        - 3
+        - 3
+      pooling_type: max
+      dropout_rate: 0.35
+  dense_blocks:
+    - features: 512
+      dropout_rate: 0.4
       activation: relu
-    - features: 128
+    - features: 256
       dropout_rate: 0.3
       activation: relu
   classifier_dropout: 0.5

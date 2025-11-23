@@ -3,11 +3,13 @@
 
 from __future__ import annotations
 
+import math
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Dict, Iterator, Mapping
 
 import matplotlib as mpl
+import matplotlib.pyplot as plt
 import seaborn as sns
 
 from Project_2_Image_Classification.src.utils.logging import get_logger
@@ -16,6 +18,7 @@ __all__ = [
     "PlotStyleConfig",
     "PlotStyler",
     "scientific_style",
+    "place_legend_below",
 ]
 
 
@@ -129,3 +132,39 @@ def scientific_style(config: PlotStyleConfig | None = None) -> Iterator[None]:
     styler = PlotStyler(config)
     with styler.context():
         yield
+
+
+def place_legend_below(
+        fig: plt.Figure,
+        ax: plt.Axes,
+        *,
+        title: str | None = None,
+) -> None:
+    """Position the legend underneath ``ax`` without covering plotted content."""
+
+    handles, labels = ax.get_legend_handles_labels()
+    if not handles:
+        return
+
+    n_items = len(labels)
+    if n_items <= 4:
+        ncol = 1
+    elif n_items <= 10:
+        ncol = 2
+    elif n_items <= 16:
+        ncol = 3
+    else:
+        ncol = 4
+
+    fig.legend(
+        handles,
+        [str(label) for label in labels],
+        title=title,
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.04),
+        ncol=ncol,
+        frameon=True,
+    )
+
+    legend_padding = 0.1 + 0.015 * math.ceil(n_items / ncol)
+    fig.subplots_adjust(bottom=min(0.3, legend_padding + 0.08))

@@ -11,7 +11,11 @@ import pandas as pd
 import seaborn as sns
 
 from Project_2_Image_Classification.src.utils.logging import get_logger
-from Project_2_Image_Classification.src.visualization.style import PlotStyleConfig, PlotStyler
+from Project_2_Image_Classification.src.visualization.style import (
+    PlotStyleConfig,
+    PlotStyler,
+    place_legend_below,
+)
 
 __all__ = [
     "TrainingVisualizerConfig",
@@ -85,7 +89,7 @@ class TrainingVisualizer:
             ax.set_ylabel(metric.replace("_", " ").title())
             ax.set_title(f"{metric.replace('_', ' ').title()} over epochs")
             if train_column in df or val_column in df:
-                ax.legend(frameon=False)
+                place_legend_below(fig, ax)
             sns.despine()
 
             output_path = self._save_figure(fig, filename)

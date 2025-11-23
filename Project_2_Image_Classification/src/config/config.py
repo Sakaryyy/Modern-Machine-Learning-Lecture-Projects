@@ -74,7 +74,7 @@ class TrainingDefaults:
     eval_batch_size: int = 256
     log_every: int = 100
     optimizer: str = "adamw"
-    learning_rate: float = 1e-3
+    learning_rate: float = 1e-2
     weight_decay: float = 1e-4
     scheduler: str = "cosine_decay"
     scheduler_kwargs: Mapping[str, float] = field(default_factory=lambda: {"warmup_steps": 500, "alpha": 0.0})
@@ -128,7 +128,6 @@ class AblationStudyConfig:
             "optimizer": ["adamw", "adam", "sgd", "rmsprop"],
             "learning_rate": [1e-3, 5e-3, 1e-2],
             "weight_decay": [0.0, 1e-4, 5e-4],
-            "momentum": [0.8, 0.9],
             "scheduler": [
                 "constant",
                 "cosine_decay",

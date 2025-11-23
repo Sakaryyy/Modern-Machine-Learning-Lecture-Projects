@@ -10,7 +10,11 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 
-from Project_2_Image_Classification.src.visualization.style import PlotStyleConfig, scientific_style
+from Project_2_Image_Classification.src.visualization.style import (
+    PlotStyleConfig,
+    place_legend_below,
+    scientific_style,
+)
 
 
 @dataclass(slots=True)
@@ -117,7 +121,7 @@ class HyperparameterSearchVisualizer:
                 ax.set_xlabel(column.replace("_", " ").title())
                 ax.set_ylabel(metric.replace("_", " ").title())
                 ax.set_title(f"{metric.replace('_', ' ').title()} vs {column.replace('_', ' ').title()}")
-                ax.legend(frameon=False)
+                place_legend_below(fig, ax)
                 figure_path = self.figures_dir / f"hyperparameter_effect_{column}.png"
                 fig.tight_layout()
                 fig.savefig(figure_path)
