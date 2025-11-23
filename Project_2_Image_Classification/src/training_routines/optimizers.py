@@ -42,7 +42,7 @@ class OptimizerConfig:
     name: str = "adamw"
     weight_decay: float = 1e-4
     momentum: float = 0.9
-    nesterov: bool = False
+    nesterov: bool = True
     beta1: float = 0.9
     beta2: float = 0.999
     eps: float = 1e-8

@@ -559,6 +559,7 @@ class CLIApplication:
         if optimizer_override is not None:
             optimizer_dict["name"] = optimizer_override
         optimizer_dict.setdefault("name", defaults.optimizer)
+
         optimizer_dict.setdefault("weight_decay", defaults.weight_decay)
         trainer_dict["optimizer"] = optimizer_dict
 
@@ -567,9 +568,11 @@ class CLIApplication:
         if scheduler_override is not None:
             scheduler_dict["name"] = scheduler_override
         scheduler_dict.setdefault("name", defaults.scheduler)
+
         learning_rate_override = getattr(args, "learning_rate", None)
         if learning_rate_override is not None:
             scheduler_dict["learning_rate"] = learning_rate_override
+
         scheduler_dict.setdefault("learning_rate", defaults.learning_rate)
         for key, value in defaults.scheduler_kwargs.items():
             scheduler_dict.setdefault(key, value)

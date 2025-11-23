@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator, Mapping, MutableMapping, Sequence
+from typing import Any, Iterator, Mapping, MutableMapping, Sequence, Dict
 
 import jax
 import jax.nn as jnn
@@ -162,7 +162,7 @@ class ClassificationRunner:
                     class_names,
                     probabilities,
                 )
-            except Exception as exc:  # pragma: no cover - defensive guard for optional visualisations
+            except Exception as exc:
                 self._logger.warning("Failed to generate feature visualisations: %s", exc)
 
         metrics_path = self._metrics_dir / "classification_metrics.json"
@@ -212,7 +212,7 @@ class ClassificationRunner:
             return create_image_classifier(config)
         raise ValueError(f"Unsupported model '{model_name}' in model definition.")
 
-    def _load_model_state(self) -> tuple[Mapping[str, Any], Mapping[str, Any] | None]:
+    def _load_model_state(self) -> tuple[Dict[str, Any], Dict[str, Any] | None]:
         checkpoint_dir = self._config.run_directory / "checkpoints"
         state_path = checkpoint_dir / "model_state.msgpack"
         params_path = checkpoint_dir / "final_params.msgpack"
@@ -237,7 +237,7 @@ class ClassificationRunner:
     def _evaluate(
             self,
             model: nn.Module,
-            params: Mapping[str, Any],
+            params: Dict[str, Any],
             batch_stats: Mapping[str, Any] | None,
             split,
             batch_size: int,
@@ -325,7 +325,7 @@ class ClassificationRunner:
     def _visualize_feature_activations(
             self,
             model: nn.Module,
-            params: Mapping[str, Any],
+            params: Dict[str, Any],
             batch_stats: Mapping[str, Any] | None,
             images: np.ndarray,
             labels: np.ndarray,
@@ -407,7 +407,7 @@ class ClassificationRunner:
     def _capture_intermediate_activations(
             self,
             model: nn.Module,
-            params: Mapping[str, Any],
+            params: Dict[str, Any],
             batch_stats: Mapping[str, Any] | None,
             images: np.ndarray,
     ) -> Mapping[str, np.ndarray]:

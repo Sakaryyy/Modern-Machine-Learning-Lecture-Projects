@@ -82,6 +82,8 @@ class ConvBlockConfig:
             raise ValueError("'features' must be a positive integer.")
         if self.dropout_rate < 0.0 or self.dropout_rate >= 1.0:
             raise ValueError("'dropout_rate' needs to be in the interval [0, 1).")
+        if self.pooling_type in ["none", "None"]:
+            self.pooling_type = None
         if self.pooling_type not in {None, "max", "avg"}:
             raise ValueError("'pooling_type' must be one of {None, 'max', 'avg'}.")
         if any(dim <= 0 for dim in self.kernel_size):

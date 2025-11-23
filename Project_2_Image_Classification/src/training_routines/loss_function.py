@@ -34,7 +34,7 @@ class LossConfig:
     """
 
     name: str = "cross_entropy"
-    label_smoothing: float = 0.0
+    label_smoothing: float = 0.05
 
     def __post_init__(self) -> None:
         if self.label_smoothing < 0.0 or self.label_smoothing >= 1.0:

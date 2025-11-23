@@ -1,4 +1,4 @@
-"""Automated ablation studies and hyper-parameter search orchestration."""
+"""Automated ablation studies and hyper-parameter search."""
 
 from __future__ import annotations
 

@@ -74,6 +74,9 @@ class TrainingDefaults:
     eval_batch_size: int = 256
     log_every: int = 100
     optimizer: str = "adamw"
+    nesterov: bool = True
+    beta1: float = 0.9
+    beta2: float = 0.999
     learning_rate: float = 1e-2
     weight_decay: float = 1e-4
     scheduler: str = "cosine_decay"
@@ -81,11 +84,12 @@ class TrainingDefaults:
     loss: str = "cross_entropy"
     metrics: tuple[str, ...] = ("loss", "accuracy")
     use_data_augmentation: bool = True
+    label_smoothing: float = 0.05
 
 
 @dataclass(slots=True)
 class BaselineModelDefaults:
-    """Reasonable starting point for the baseline multi-layer perceptron."""
+    """Starting point for the baseline multi-layer perceptron."""
 
     hidden_units: int = 512
     activation: str = "relu"
@@ -146,8 +150,7 @@ class AblationStudyConfig:
 
         Each iteration isolates a single hyper-parameter change relative to the
         defaults.  For every configured parameter, the generator yields
-        dictionaries that only modify one entry at a time which mirrors the
-        standard ablation methodology.
+        dictionaries that only modify one entry at a time.
         """
 
         for name, values in self.parameters.items():
@@ -203,7 +206,7 @@ class HyperparameterSearchConfig:
     output_subdir: str = "hyperparameter_search"
 
     def iter_grid(self) -> Iterator[Mapping[str, Any]]:
-        """Yield combinations representing the full Cartesian product."""
+        """Yield combinations."""
 
         items: List[tuple[str, List[Any]]] = [(name, list(values)) for name, values in self.search_space.items()]
         keys = [name for name, _ in items]
