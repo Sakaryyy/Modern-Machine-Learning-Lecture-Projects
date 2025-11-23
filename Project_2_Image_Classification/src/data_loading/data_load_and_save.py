@@ -199,6 +199,13 @@ class CIFAR10DataManager:
             "val_split": self.val_split,
             "seed": self.seed,
             "class_names": list(dataset.metadata.get("class_names", ())),
+            "split_sizes": {
+                split_name: {
+                    "images": int(dataset.splits[split_name].images.shape[0]),
+                    "labels": int(dataset.splits[split_name].labels.shape[0]),
+                }
+                for split_name in ("train", "validation", "test")
+            },
         }
         self.metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
 

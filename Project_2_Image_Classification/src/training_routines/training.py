@@ -222,6 +222,7 @@ class Trainer:
             if self._config.augmentation.enabled
             else None
         )
+        self._augmentation_multiplier = 2 if self._augmenter is not None else 1
         self._trainer_config_path = self._persist_trainer_config()
 
         self._logger.info(
@@ -289,6 +290,8 @@ class Trainer:
                 "train_grad_norm": train_metrics.get("grad_norm", float("nan")),
                 "train_num_batches": train_metrics.get("num_batches", float("nan")),
                 "train_num_samples": train_metrics.get("num_samples", float("nan")),
+                "train_raw_num_samples": train_metrics.get("raw_num_samples", float("nan")),
+                "train_effective_batch_size": train_metrics.get("effective_batch_size", float("nan")),
                 "learning_rate": float(schedule(lr_step)),
             }
 
@@ -308,13 +311,16 @@ class Trainer:
             history_records.append(record)
 
             self._logger.info(
-                "Epoch %d/%d - train_loss=%.4f train_acc=%.3f grad_norm=%.4f (%d batches)%s",
+                "Epoch %d/%d - train_loss=%.4f train_acc=%.3f grad_norm=%.4f "
+                "(%d batches, effective_batch_size=%d, ~%d samples)%s",
                 epoch,
                 self._config.num_epochs,
                 record["train_loss"],
                 record["train_accuracy"],
                 record["train_grad_norm"],
                 int(record["train_num_batches"]),
+                int(record["train_effective_batch_size"]),
+                int(record["train_num_samples"]),
                 f" val_acc={record.get('validation_accuracy', float('nan')):.3f}" if validation_split is not None else "",
             )
 
@@ -503,14 +509,19 @@ class Trainer:
             shuffle_rng, augmentation_rng = jax.random.split(rng)
 
         num_samples = split.images.shape[0]
+        augmentation_factor = self._augmentation_multiplier
+        effective_num_samples = num_samples * augmentation_factor
+        effective_batch_size = self._config.batch_size * augmentation_factor
         num_batches = math.ceil(num_samples / self._config.batch_size)
         self._logger.debug(
-            "Epoch %d/%d - processing %d training samples as %d batches (batch_size=%d).",
+            "Epoch %d/%d - processing %d raw samples (~%d with augmentation) as %d batches "
+            "(effective batch_size=%d).",
             epoch,
             self._config.num_epochs,
             num_samples,
+            effective_num_samples,
             num_batches,
-            self._config.batch_size,
+            effective_batch_size,
         )
 
         batch_iter = self._iterate_batches(
@@ -531,10 +542,12 @@ class Trainer:
             for step, batch in enumerate(batch_iter, start=1):
                 if self._augmenter is not None and augmentation_rng is not None:
                     augmentation_rng, batch_rng = jax.random.split(augmentation_rng)
-                    batch["images"] = self._augmenter(batch_rng, batch["images"])
+                    augmented_images = self._augmenter(batch_rng, batch["images"])
+                    batch["images"] = jnp.concatenate((batch["images"], augmented_images), axis=0)
+                    batch["labels"] = jnp.concatenate((batch["labels"], batch["labels"]), axis=0)
                     if not logged_augmentation_shape:
                         self._logger.debug(
-                            "Epoch %d - first augmented batch shape: %s",
+                            "Epoch %d - first augmented batch shape (orig+aug): %s",
                             epoch,
                             tuple(batch["images"].shape),
                         )
@@ -579,7 +592,9 @@ class Trainer:
         if "grad_norm" not in aggregated:
             aggregated["grad_norm"] = float("nan")
         aggregated["num_batches"] = float(len(metrics))
-        aggregated["num_samples"] = float(num_samples)
+        aggregated["num_samples"] = float(effective_num_samples)
+        aggregated["raw_num_samples"] = float(num_samples)
+        aggregated["effective_batch_size"] = float(effective_batch_size)
         return state, aggregated
 
     def _evaluate_split(
@@ -670,6 +685,10 @@ class Trainer:
         val_size = _split_size(validation_split)
         test_size = _split_size(test_split)
 
+        augmentation_factor = self._augmentation_multiplier
+        effective_train_size = train_size * augmentation_factor
+        effective_batch_size = self._config.batch_size * augmentation_factor
+
         self._logger.info(
             "Dataset summary - train=%d samples, validation=%d, test=%d",
             train_size,
@@ -677,16 +696,24 @@ class Trainer:
             test_size,
         )
 
+        if augmentation_factor > 1:
+            self._logger.info(
+                "Augmentation expands the training split to %d effective samples "
+                "(augmentation factor=%d).",
+                effective_train_size,
+                augmentation_factor,
+            )
+
         train_batches = math.ceil(train_size / self._config.batch_size)
         eval_batch_size = self._config.evaluation_batch_size
         val_batches = math.ceil(val_size / eval_batch_size) if val_size > 0 else 0
         test_batches = math.ceil(test_size / eval_batch_size) if test_size > 0 else 0
 
         self._logger.info(
-            "Training will run for %d epochs with %d batches per epoch (batch_size=%d).",
+            "Training will run for %d epochs with %d batches per epoch (effective batch_size=%d).",
             self._config.num_epochs,
             train_batches,
-            self._config.batch_size,
+            effective_batch_size,
         )
 
         if val_size > 0:

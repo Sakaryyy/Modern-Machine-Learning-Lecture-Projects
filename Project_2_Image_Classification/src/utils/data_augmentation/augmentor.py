@@ -191,7 +191,7 @@ class ImageAugmenter:
         augmented = jnp.clip(augmented, 0.0, 1.0)
         if not self._has_logged_runtime_shape:
             self._logger.info(
-                "Augmentation processed batch with shape %s -> %s (sample count preserved).",
+                "Augmentation processed batch with shape %s -> %s.",
                 tuple(images.shape),
                 tuple(augmented.shape),
             )
@@ -358,7 +358,7 @@ class ImageAugmenter:
         for step_description in steps:
             self._logger.info(" • %s", step_description)
         self._logger.info(
-            "Augmentation preserves the number of samples per batch; logging actual shapes on first use."
+            "Augmentation logs actual batch shapes on first use."
         )
 
     def _gaussian_noise(self, rng: jax.Array, images: jnp.ndarray) -> jnp.ndarray:
@@ -373,21 +373,32 @@ class ImageAugmenter:
         half = self._config.cutout_size // 2
         key_mask, key_y, key_x = jax.random.split(rng, 3)
         mask = jax.random.bernoulli(key_mask, self._config.cutout_probability, (batch_size,))
-        centers_y = jax.random.randint(key_y, (batch_size,), 0, height)
-        centers_x = jax.random.randint(key_x, (batch_size,), 0, width)
+
+        # Pad first so cutout regions can extend beyond original borders without biasing
+        # the sampling distribution towards the center.
+
+        padded = jnp.pad(
+            images,
+            ((0, 0), (half, half), (half, half), (0, 0)),
+            mode="reflect",
+        )
+        padded_height, padded_width = padded.shape[1:3]
+
+        centers_y = jax.random.randint(key_y, (batch_size,), 0, padded_height)
+        centers_x = jax.random.randint(key_x, (batch_size,), 0, padded_width)
         fill_value = self._config.cutout_fill
 
         def apply_cutout(image: jnp.ndarray, centre_y: jnp.ndarray, centre_x: jnp.ndarray,
                          apply: jnp.ndarray) -> jnp.ndarray:
             def _cut(args: tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]) -> jnp.ndarray:
                 img, y_c, x_c = args
-                y1 = jnp.clip(y_c - half, 0, height)
-                y2 = jnp.clip(y_c + half, 0, height)
-                x1 = jnp.clip(x_c - half, 0, width)
-                x2 = jnp.clip(x_c + half, 0, width)
+                y1 = jnp.clip(y_c - half, 0, padded_height)
+                y2 = jnp.clip(y_c + half, 0, padded_height)
+                x1 = jnp.clip(x_c - half, 0, padded_width)
+                x2 = jnp.clip(x_c + half, 0, padded_width)
 
-                ys = jnp.arange(height)[:, None]
-                xs = jnp.arange(width)[None, :]
+                ys = jnp.arange(padded_height)[:, None]
+                xs = jnp.arange(padded_width)[None, :]
                 region = (ys >= y1) & (ys < y2) & (xs >= x1) & (xs < x2)
                 region = region[..., None]
 
@@ -400,7 +411,12 @@ class ImageAugmenter:
 
             return jax.lax.cond(apply, _cut, lambda args: args[0], (image, centre_y, centre_x))
 
-        return jax.vmap(apply_cutout)(images, centers_y, centers_x, mask)
+        cutout_images = jax.vmap(apply_cutout)(padded, centers_y, centers_x, mask)
+
+        if half == 0:
+            return cutout_images
+
+        return cutout_images[:, half:-half, half:-half, :]
 
 
 def _bilinear_sample(image: jnp.ndarray, x: jnp.ndarray, y: jnp.ndarray) -> jnp.ndarray:
