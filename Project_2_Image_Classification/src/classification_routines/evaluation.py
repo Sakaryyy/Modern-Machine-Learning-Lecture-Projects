@@ -98,14 +98,21 @@ class ClassificationRunner:
             batch_size = self._config.batch_size
 
         model = self._instantiate_model(model_name, model_config_dict)
-        params = self._load_parameters()
+        params, batch_stats = self._load_model_state()
         loss_fn = resolve_loss_function(loss_config)
 
         test_split = dataset.splits.get("test")
         if test_split is None:
             raise KeyError("Prepared dataset must contain a 'test' split for evaluation.")
 
-        metrics, predictions = self._evaluate(model, params, test_split, batch_size, loss_fn)
+        metrics, predictions = self._evaluate(
+            model,
+            params,
+            batch_stats,
+            test_split,
+            batch_size,
+            loss_fn,
+        )
 
         class_names = dataset.metadata.get("class_names") if dataset.metadata else None
         if class_names is None:
@@ -113,6 +120,7 @@ class ClassificationRunner:
 
         confusion = self._compute_confusion_matrix(predictions["labels"], predictions["predictions"], len(class_names))
         self._visualizer.save_confusion_matrix(confusion, class_names)
+        self._visualizer.save_normalized_confusion_matrix(confusion, class_names)
         self._visualizer.save_metrics_table(metrics)
 
         images_np = np.asarray(test_split.images)
@@ -132,6 +140,12 @@ class ClassificationRunner:
         self._visualizer.save_per_class_accuracy(labels_np, preds_np, class_names)
         if probabilities is not None:
             self._visualizer.save_confidence_histogram(probabilities, labels_np, preds_np)
+            self._visualizer.save_calibration_curve(probabilities, labels_np, preds_np)
+            self._visualizer.save_prediction_distribution(labels_np, preds_np, class_names)
+            try:
+                self._visualizer.save_roc_curves(probabilities, labels_np, class_names)
+            except ValueError as exc:
+                self._logger.debug("Skipping ROC curve generation: %s", exc)
 
         if self._config.save_predictions:
             self._save_predictions(predictions, class_names)
@@ -141,6 +155,7 @@ class ClassificationRunner:
                 self._visualize_feature_activations(
                     model,
                     params,
+                    batch_stats,
                     images_np,
                     labels_np,
                     preds_np,
@@ -197,19 +212,33 @@ class ClassificationRunner:
             return create_image_classifier(config)
         raise ValueError(f"Unsupported model '{model_name}' in model definition.")
 
-    def _load_parameters(self) -> Mapping[str, Any]:
-        checkpoint_path = self._config.run_directory / "checkpoints" / "final_params.msgpack"
-        if not checkpoint_path.exists():
-            raise FileNotFoundError(f"Checkpoint file '{checkpoint_path}' not found.")
-        params_bytes = checkpoint_path.read_bytes()
+    def _load_model_state(self) -> tuple[Mapping[str, Any], Mapping[str, Any] | None]:
+        checkpoint_dir = self._config.run_directory / "checkpoints"
+        state_path = checkpoint_dir / "model_state.msgpack"
+        params_path = checkpoint_dir / "final_params.msgpack"
+
+        if state_path.exists():
+            state_bytes = state_path.read_bytes()
+            variables = serialization.from_bytes(None, state_bytes)
+            params = variables.get("params", {})
+            batch_stats = variables.get("batch_stats")
+            self._logger.info("Loaded parameters and batch statistics from %s", state_path)
+            return params, batch_stats
+
+        if not params_path.exists():
+            raise FileNotFoundError(
+                "Checkpoint files not found. Expected either 'model_state.msgpack' or 'final_params.msgpack'."
+            )
+        params_bytes = params_path.read_bytes()
         params = serialization.from_bytes(None, params_bytes)
-        self._logger.info("Loaded parameters from %s", checkpoint_path)
-        return params
+        self._logger.info("Loaded parameters from %s", params_path)
+        return params, None
 
     def _evaluate(
             self,
             model: nn.Module,
             params: Mapping[str, Any],
+            batch_stats: Mapping[str, Any] | None,
             split,
             batch_size: int,
             loss_fn,
@@ -223,7 +252,11 @@ class ClassificationRunner:
 
         @jax.jit
         def forward(batch: Batch) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-            logits = model.apply({"params": params}, batch["images"], train=False)
+            variables = params
+            if batch_stats is not None:
+                variables["batch_stats"] = batch_stats
+
+            logits = model.apply(variables, batch["images"], train=False)
             batch_loss = loss_fn(logits, batch["labels"])
             probs = jnn.softmax(logits, axis=-1)
             return logits, batch_loss, probs
@@ -293,6 +326,7 @@ class ClassificationRunner:
             self,
             model: nn.Module,
             params: Mapping[str, Any],
+            batch_stats: Mapping[str, Any] | None,
             images: np.ndarray,
             labels: np.ndarray,
             predictions: np.ndarray,
@@ -314,7 +348,7 @@ class ClassificationRunner:
         sample_preds = predictions[indices]
         sample_probs = probabilities[indices] if probabilities is not None else None
 
-        activations = self._capture_intermediate_activations(model, params, sample_images)
+        activations = self._capture_intermediate_activations(model, params, batch_stats, sample_images)
         if not activations:
             self._logger.info("Model does not expose intermediate activations for visualisation.")
             return
@@ -327,6 +361,14 @@ class ClassificationRunner:
         if not conv_layers and not dense_layers:
             self._logger.info("No intermediate activations available for visualisation.")
             return
+
+        if conv_layers:
+            for layer_name, activation in conv_layers:
+                self._visualizer.save_activation_statistics(
+                    layer_name,
+                    activation,
+                    filename=f"aggregate_{layer_name.replace('/', '_')}_statistics.png",
+                )
 
         for order, sample_index in enumerate(range(sample_count)):
             conv_samples = [(name, np.asarray(value[sample_index])) for name, value in conv_layers]
@@ -366,12 +408,15 @@ class ClassificationRunner:
             self,
             model: nn.Module,
             params: Mapping[str, Any],
+            batch_stats: Mapping[str, Any] | None,
             images: np.ndarray,
     ) -> Mapping[str, np.ndarray]:
         from Project_2_Image_Classification.src.models.building_blocks.convolution_layer import ConvBlock
         from Project_2_Image_Classification.src.models.building_blocks.dense_layer import DenseBlock
 
-        variables = {"params": params}
+        variables = params
+        if batch_stats is not None:
+            variables["batch_stats"] = batch_stats
         capture_fn = lambda module, _: isinstance(module, (ConvBlock, DenseBlock))  # noqa: E731
 
         try:

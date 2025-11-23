@@ -68,7 +68,46 @@ class ClassificationVisualizer:
             ax.set_xlabel("Predicted label")
             ax.set_ylabel("True label")
             ax.set_title("Confusion Matrix")
-            fig.tight_layout()
+
+            fig.savefig(figure_path)
+            plt.close(fig)
+        return figure_path
+
+    def save_normalized_confusion_matrix(
+            self,
+            confusion_matrix: np.ndarray,
+            class_names: Sequence[str],
+            *,
+            filename: str = "confusion_matrix_normalized.png",
+    ) -> Path:
+        """Render a row-normalised confusion matrix highlighting error patterns."""
+
+        if confusion_matrix.shape[0] != confusion_matrix.shape[1]:
+            raise ValueError("Confusion matrix must be square to normalise.")
+        if len(class_names) != confusion_matrix.shape[0]:
+            raise ValueError("Number of class names must match confusion matrix size.")
+
+        totals = confusion_matrix.sum(axis=1, keepdims=True)
+        totals[totals == 0] = 1
+        normalised = confusion_matrix / totals
+
+        figure_path = self._figures_dir / filename
+        with scientific_style(self._config.style_config):
+            fig, ax = plt.subplots(figsize=(6, 5))
+            sns.heatmap(
+                normalised,
+                annot=True,
+                fmt=".2f",
+                cmap="magma",
+                xticklabels=class_names,
+                yticklabels=class_names,
+                ax=ax,
+                vmin=0.0,
+                vmax=1.0,
+            )
+            ax.set_xlabel("Predicted label")
+            ax.set_ylabel("True label")
+            ax.set_title("Normalised Confusion Matrix")
             fig.savefig(figure_path)
             plt.close(fig)
         return figure_path
@@ -130,7 +169,6 @@ class ClassificationVisualizer:
                 ax.set_title(subtitle, fontsize=8)
 
             fig.suptitle("Model predictions on evaluation samples", fontsize=12)
-            fig.tight_layout()
             output_path = self._figures_dir / filename
             fig.savefig(output_path)
             plt.close(fig)
@@ -157,7 +195,7 @@ class ClassificationVisualizer:
 
         with self._styler.context():
             fig, ax = plt.subplots(figsize=(8, 4))
-            sns.barplot(data=grouped, x="class_name", y="mean", ax=ax, palette="viridis")
+            sns.barplot(data=grouped, x="class_name", y="mean", ax=ax)
             ax.set_xlabel("Class")
             ax.set_ylabel("Accuracy")
             ax.set_ylim(0.0, 1.0)
@@ -165,7 +203,6 @@ class ClassificationVisualizer:
             for tick in ax.get_xticklabels():
                 tick.set_rotation(45)
             output_path = self._figures_dir / filename
-            fig.tight_layout()
             fig.savefig(output_path)
             plt.close(fig)
 
@@ -196,12 +233,168 @@ class ClassificationVisualizer:
             ax.set_ylabel("Density")
             ax.set_title("Confidence distribution across predictions")
             output_path = self._figures_dir / filename
-            fig.tight_layout()
             fig.savefig(output_path)
             plt.close(fig)
 
         self._logger.info("Saved confidence histogram to %s", output_path)
         return output_path
+
+    def save_calibration_curve(
+            self,
+            probabilities: np.ndarray,
+            labels: np.ndarray,
+            predictions: np.ndarray,
+            *,
+            bins: int = 15,
+            filename: str = "calibration_curve.png",
+    ) -> Path:
+        """Create a reliability diagram comparing confidence to empirical accuracy."""
+
+        confidences = probabilities[np.arange(probabilities.shape[0]), predictions.astype(int)]
+        correctness = (predictions == labels).astype(float)
+        bin_edges = np.linspace(0.0, 1.0, bins + 1)
+        bin_indices = np.digitize(confidences, bin_edges, right=True) - 1
+
+        bin_acc = []
+        bin_conf = []
+        for bin_id in range(bins):
+            mask = bin_indices == bin_id
+            if not np.any(mask):
+                bin_acc.append(np.nan)
+                bin_conf.append(np.nan)
+                continue
+            bin_acc.append(np.mean(correctness[mask]))
+            bin_conf.append(np.mean(confidences[mask]))
+
+        bin_conf = np.asarray(bin_conf)
+        bin_acc = np.asarray(bin_acc)
+        valid_mask = np.isfinite(bin_conf) & np.isfinite(bin_acc)
+
+        with self._styler.context():
+            fig, ax = plt.subplots(figsize=(6, 5))
+            ax.plot([0, 1], [0, 1], "--", color="gray", label="Perfect calibration")
+            ax.plot(bin_conf[valid_mask], bin_acc[valid_mask], marker="o", label="Model calibration")
+            ax.set_xlim(0, 1)
+            ax.set_ylim(0, 1)
+            ax.set_xlabel("Mean predicted confidence")
+            ax.set_ylabel("Empirical accuracy")
+            ax.set_title("Reliability diagram")
+            ax.legend()
+            output_path = self._figures_dir / filename
+            fig.savefig(output_path)
+            plt.close(fig)
+
+        self._logger.info("Saved calibration curve to %s", output_path)
+        return output_path
+
+    def save_prediction_distribution(
+            self,
+            labels: np.ndarray,
+            predictions: np.ndarray,
+            class_names: Sequence[str],
+            *,
+            filename: str = "prediction_distribution.png",
+    ) -> Path:
+        """Visualise how predictions are distributed relative to the class prior."""
+
+        labels = labels.astype(int)
+        predictions = predictions.astype(int)
+        true_counts = np.bincount(labels, minlength=len(class_names))
+        pred_counts = np.bincount(predictions, minlength=len(class_names))
+        frame = pd.DataFrame({
+            "class": class_names,
+            "true": true_counts,
+            "predicted": pred_counts,
+        })
+        melted = frame.melt(id_vars="class", var_name="type", value_name="count")
+
+        with self._styler.context():
+            fig, ax = plt.subplots(figsize=(8, 4))
+            sns.barplot(data=melted, x="class", y="count", hue="type", ax=ax, palette="viridis")
+            ax.set_xlabel("Class")
+            ax.set_ylabel("Count")
+            ax.set_title("Prediction vs true class distribution")
+            for tick in ax.get_xticklabels():
+                tick.set_rotation(45)
+            output_path = self._figures_dir / filename
+            fig.savefig(output_path)
+            plt.close(fig)
+
+        self._logger.info("Saved prediction distribution to %s", output_path)
+        return output_path
+
+    def save_roc_curves(
+            self,
+            probabilities: np.ndarray,
+            labels: np.ndarray,
+            class_names: Sequence[str],
+            *,
+            filename: str = "roc_curves.png",
+    ) -> Path:
+        """Plot one-vs-rest ROC curves for each class."""
+
+        if probabilities.shape[1] != len(class_names):
+            raise ValueError("Probability matrix columns must match number of class names.")
+        labels = labels.astype(int)
+
+        with self._styler.context():
+            fig, ax = plt.subplots(figsize=(7, 6))
+            ax.plot([0, 1], [0, 1], "--", color="gray", label="Chance")
+            for class_index, class_name in enumerate(class_names):
+                target = (labels == class_index).astype(float)
+                scores = probabilities[:, class_index]
+                fpr, tpr = self._compute_roc_points(target, scores)
+                if fpr is None or tpr is None:
+                    continue
+                auc = np.trapz(tpr, fpr)
+                ax.plot(fpr, tpr, label=f"{class_name} (AUC={auc:.2f})")
+
+            ax.set_xlim(0.0, 1.0)
+            ax.set_ylim(0.0, 1.0)
+            ax.set_xlabel("False positive rate")
+            ax.set_ylabel("True positive rate")
+            ax.set_title("One-vs-rest ROC curves")
+            ax.legend()
+            output_path = self._figures_dir / filename
+            fig.savefig(output_path)
+            plt.close(fig)
+
+        self._logger.info("Saved ROC curves to %s", output_path)
+        return output_path
+
+    @staticmethod
+    def _compute_roc_points(target: np.ndarray, scores: np.ndarray) -> tuple[np.ndarray | None, np.ndarray | None]:
+        """Compute ROC curve points."""
+
+        if target.ndim != 1 or scores.ndim != 1:
+            raise ValueError("Target labels and scores must be 1D arrays.")
+        if target.shape[0] != scores.shape[0]:
+            raise ValueError("Target labels and scores must share the same length.")
+        if np.unique(target).size == 1:
+            return None, None
+
+        order = np.argsort(scores)[::-1]
+        sorted_scores = scores[order]
+        sorted_target = target[order]
+
+        thresholds = np.r_[np.inf, np.unique(sorted_scores)]
+        tpr = []
+        fpr = []
+        positives = sorted_target.sum()
+        negatives = sorted_target.shape[0] - positives
+        tp = fp = 0.0
+        idx = 0
+        for threshold in thresholds:
+            while idx < len(sorted_scores) and sorted_scores[idx] >= threshold:
+                if sorted_target[idx] == 1:
+                    tp += 1
+                else:
+                    fp += 1
+                idx += 1
+            tpr.append(tp / positives if positives > 0 else 0.0)
+            fpr.append(fp / negatives if negatives > 0 else 0.0)
+
+        return np.array(fpr), np.array(tpr)
 
     def save_activation_overview(
             self,
@@ -238,12 +431,51 @@ class ClassificationVisualizer:
                 axes[axis_index].axis("off")
 
             fig.suptitle("Activation overview", fontsize=12)
-            fig.tight_layout()
             output_path = self._figures_dir / filename
             fig.savefig(output_path)
             plt.close(fig)
 
         self._logger.info("Saved activation overview to %s", output_path)
+        return output_path
+
+    def save_activation_statistics(
+            self,
+            layer_name: str,
+            activation: np.ndarray,
+            *,
+            filename: str,
+            top_channels: int = 12,
+    ) -> Path:
+        """Summarise activation strength across channels and spatial locations."""
+
+        if activation.ndim != 4:
+            raise ValueError("Activation statistics require a 4D tensor (batch, height, width, channels).")
+
+        aggregated_map = activation.mean(axis=(0, -1))
+        channel_strength = np.mean(np.abs(activation), axis=(0, 1, 2))
+        top_channels = int(min(top_channels, channel_strength.shape[0]))
+        top_indices = np.argsort(channel_strength)[::-1][:top_channels]
+
+        with scientific_style(self._config.style_config):
+            fig, (ax_map, ax_bar) = plt.subplots(1, 2, figsize=(10, 4))
+            heat = ax_map.imshow(aggregated_map, cmap="magma")
+            fig.colorbar(heat, ax=ax_map, fraction=0.046, pad=0.04)
+            ax_map.set_title("Mean activation (spatial)")
+            ax_map.axis("off")
+
+            ax_bar.bar(np.arange(top_channels), channel_strength[top_indices],
+                       color=sns.color_palette("viridis", top_channels))
+            ax_bar.set_xticks(np.arange(top_channels))
+            ax_bar.set_xticklabels([str(idx) for idx in top_indices], rotation=45, ha="right")
+            ax_bar.set_ylabel("Mean |activation|")
+            ax_bar.set_title("Most responsive channels")
+
+            fig.suptitle(layer_name.replace("_", " "), fontsize=12)
+            output_path = self._figures_dir / filename
+            fig.savefig(output_path)
+            plt.close(fig)
+
+        self._logger.info("Saved activation statistics for %s to %s", layer_name, output_path)
         return output_path
 
     def save_feature_map_grid(
@@ -285,7 +517,6 @@ class ClassificationVisualizer:
                 ax.axis("off")
 
             fig.suptitle(layer_name.replace("_", " "), fontsize=12)
-            fig.tight_layout()
             safe_layer = layer_name.replace("/", "_")
             output_name = filename or f"{safe_layer}_featuremaps.png"
             output_path = self._figures_dir / output_name
@@ -317,13 +548,12 @@ class ClassificationVisualizer:
 
         with scientific_style(self._config.style_config):
             fig, ax = plt.subplots(figsize=(max(6, top_k * 0.3), 3.5))
-            sns.barplot(x=np.arange(top_k), y=values, ax=ax, palette="viridis")
+            sns.barplot(x=np.arange(top_k), y=values, ax=ax)
             ax.set_xlabel("Activation rank")
             ax.set_ylabel("Activation value")
             ax.set_title(layer_name.replace("_", " "))
             ax.set_xticks(np.arange(top_k))
             ax.set_xticklabels([str(idx) for idx in indices], rotation=45, ha="right")
-            fig.tight_layout()
             safe_layer = layer_name.replace("/", "_")
             output_name = filename or f"{safe_layer}_dense.png"
             output_path = self._figures_dir / output_name

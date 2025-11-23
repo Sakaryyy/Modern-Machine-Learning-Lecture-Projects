@@ -406,7 +406,10 @@ class Trainer:
         checkpoint_dir = self._output_dir / "checkpoints"
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
         checkpoint_path = checkpoint_dir / "final_params.msgpack"
-        checkpoint_path.write_bytes(serialization.to_bytes(state.params))
+        variables = {"params": state.params}
+        if state.batch_stats is not None:
+            variables["batch_stats"] = state.batch_stats
+        checkpoint_path.write_bytes(serialization.to_bytes(variables))
         metadata = {"step": int(jax.device_get(state.step))}
         (checkpoint_dir / "checkpoint_meta.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
         self._logger.info("Saved model checkpoint to %s", checkpoint_path)
