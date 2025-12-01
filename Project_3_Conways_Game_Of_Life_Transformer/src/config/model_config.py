@@ -1,0 +1,46 @@
+from dataclasses import dataclass
+
+
+@dataclass
+class TransformerConfig:
+    """Configuration container for the Game of Life transformer.
+
+    Attributes
+    ----------
+    d_model : int
+        Dimensionality of the token embeddings and hidden representations.
+    num_heads : int
+        Number of attention heads in each self attention layer.
+    num_layers : int
+        Number of transformer blocks to stack.
+    mlp_dim : int
+        Dimensionality of the hidden layer in the MLP sub block.
+    dropout_rate : float
+        Dropout rate used in attention and MLP.
+    use_local_attention : bool
+        If True restrict attention to a local window around each cell.
+        If False use full global self attention.
+    window_radius : int
+        Radius of the local attention window in lattice coordinates.
+        For Game of Life a value of 1 corresponds to the 3x3 neighborhood.
+    use_coord_features : bool
+        If True concatenate normalized 2D coordinates to the raw cell
+        state as input features.
+    use_relative_position_bias : bool
+        If True add a learned relative positional bias to attention
+        logits based on the 1D token distance within the flattened grid.
+    max_relative_distance : int
+        Maximum distance for which separate relative bias parameters are
+        learned. Larger distances are clipped to this value.
+    """
+
+    d_model: int = 64
+    num_heads: int = 4
+    num_layers: int = 3
+    mlp_dim: int = 128
+    dropout_rate: float = 0.0
+    use_local_attention: bool = True
+    window_radius: int = 1
+    use_coord_features: bool = True
+    use_relative_position_bias: bool = False
+    max_relative_distance: int = 64
