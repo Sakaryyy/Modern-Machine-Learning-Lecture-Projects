@@ -15,10 +15,14 @@ from Project_3_Conways_Game_Of_Life_Transformer.src.config.model_config import T
 from Project_3_Conways_Game_Of_Life_Transformer.src.config.training_config import TrainingConfig
 from Project_3_Conways_Game_Of_Life_Transformer.src.data_functions.data_pipelines import sample_random_grid
 from Project_3_Conways_Game_Of_Life_Transformer.src.training.training_routine import (
+    analyse_rule_adherence,
     generate_predictions,
+    load_run_artifact_configs,
     train_and_evaluate,
 )
 from Project_3_Conways_Game_Of_Life_Transformer.src.utils.logging import LoggingConfig, LoggingManager, get_logger
+from Project_3_Conways_Game_Of_Life_Transformer.src.utils.rule_analysis import compute_rule_categories
+from Project_3_Conways_Game_Of_Life_Transformer.src.visualization.plotting_utils import plot_grid_triplet
 
 
 def default_config_dict() -> Dict[str, Dict[str, Any]]:
@@ -365,7 +369,10 @@ def run_generation(args: argparse.Namespace, config_data: Dict[str, Dict[str, An
                       log_to_file=bool(logging_section.get("log_to_file", True)))
     logger = get_logger(__name__)
 
-    data_section = config_data.get("data", {})
+    run_dir = args.checkpoint.resolve().parent.parent
+    saved_data_cfg, saved_model_cfg, _ = load_run_artifact_configs(run_dir)
+
+    data_section = asdict(saved_data_cfg) if saved_data_cfg is not None else config_data.get("data", {})
     height = args.height or int(data_section.get("height", 16))
     width = args.width or int(data_section.get("width", 16))
     density_range = _coerce_density_range(
@@ -374,7 +381,7 @@ def run_generation(args: argparse.Namespace, config_data: Dict[str, Dict[str, An
     density = args.density if args.density is not None else float(data_section.get("density", 0.5))
     seed = args.seed if args.seed is not None else int(data_section.get("seed", 0))
 
-    model_cfg = TransformerConfig()
+    model_cfg = saved_model_cfg or TransformerConfig()
     rng = np.random.default_rng(seed)
     densities = (
         rng.uniform(low=density_range[0], high=density_range[1], size=args.num_samples)
@@ -386,6 +393,27 @@ def run_generation(args: argparse.Namespace, config_data: Dict[str, Dict[str, An
         inputs[i] = sample_random_grid(height, width, float(dens), rng)
 
     preds = generate_predictions(args.checkpoint, model_cfg, inputs, args.batch_size)
+    deterministic_targets = np.empty_like(inputs, dtype=int)
+    for idx, grid in enumerate(inputs):
+        deterministic_targets[idx], _ = compute_rule_categories(grid)
+
+    rule_dir = output_dir / "rule_diagnostics"
+    rule_dir.mkdir(parents=True, exist_ok=True)
+    analyse_rule_adherence(
+        inputs=inputs,
+        targets=deterministic_targets,
+        probs=preds,
+        output_dir=rule_dir,
+        prefix="generation",
+    )
+    plot_grid_triplet(
+        inputs[0],
+        deterministic_targets[0],
+        preds[0],
+        save_path=rule_dir / "generation_example.png",
+        title="Generation example with deterministic target",
+    )
+
     np.save(output_dir / "inputs.npy", inputs)
     np.save(output_dir / "densities.npy", densities)
     np.save(output_dir / "predictions.npy", preds)

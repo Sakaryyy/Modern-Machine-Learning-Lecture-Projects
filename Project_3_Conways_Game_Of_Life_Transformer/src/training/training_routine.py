@@ -13,6 +13,7 @@ import numpy as np
 import optax
 import pandas as pd
 from flax import serialization
+from tqdm.auto import tqdm
 
 from Project_3_Conways_Game_Of_Life_Transformer.src.config.data_config import DataConfig
 from Project_3_Conways_Game_Of_Life_Transformer.src.config.model_config import TransformerConfig
@@ -46,12 +47,18 @@ from Project_3_Conways_Game_Of_Life_Transformer.src.utils.parameter_analysis imp
     estimate_attention_flops,
     estimate_parameter_memory,
 )
+from Project_3_Conways_Game_Of_Life_Transformer.src.utils.rule_analysis import (
+    RuleCategory,
+    RuleMetrics,
+    summarise_rule_accuracy,
+)
 from Project_3_Conways_Game_Of_Life_Transformer.src.visualization.plotting_utils import (
     plot_calibration_curve,
     plot_grid_difference,
     plot_grid_pair_examples,
     plot_grid_triplet,
     plot_multiple_roc_curves,
+    plot_rule_diagnostics,
     plot_training_curves,
     set_scientific_plot_style,
 )
@@ -318,8 +325,9 @@ def _evaluate_dataset(
         inputs: np.ndarray,
         targets: np.ndarray,
         batch_size: int,
+        desc: str | None = None,
 ) -> Tuple[float, float, np.ndarray]:
-    """Run evaluation over a dataset and aggregate metrics."""
+    """Run evaluation over a dataset and aggregate metrics with progress bars."""
 
     eval_batches = data_loader(
         inputs,
@@ -331,7 +339,8 @@ def _evaluate_dataset(
 
     loss_list, acc_list = [], []
     logits_all = []
-    for batch in eval_batches:
+    iterator = tqdm(eval_batches, total=int(np.ceil(inputs.shape[0] / batch_size)), desc=desc, leave=False)
+    for batch in iterator:
         metrics = eval_step(state, batch)
         loss_list.append(metrics["loss"])
         acc_list.append(metrics["accuracy"])
@@ -359,6 +368,80 @@ def _save_configs(output_dir: Path, data_cfg: DataConfig, model_cfg: Transformer
         cfg_path = output_dir / "configs" / f"{name}.json"
         cfg_path.write_text(json.dumps(asdict(cfg), indent=2, default=str))
         LOGGER.info("Saved %s configuration to %s", name, cfg_path)
+
+
+def _load_config_from_artifacts(run_dir: Path, name: str, cls):
+    cfg_path = run_dir / "configs" / f"{name}.json"
+    if cfg_path.exists():
+        LOGGER.info("Loading %s configuration from %s", name, cfg_path)
+        return cls(**json.loads(cfg_path.read_text()))
+    LOGGER.warning("No saved %s configuration found at %s; using defaults", name, cfg_path)
+    return None
+
+
+def load_run_artifact_configs(
+        run_dir: Path,
+) -> Tuple[DataConfig | None, TransformerConfig | None, TrainingConfig | None]:
+    """Load saved configs adjacent to a checkpoint directory when available."""
+
+    data_cfg = _load_config_from_artifacts(run_dir, "data", DataConfig)
+    model_cfg = _load_config_from_artifacts(run_dir, "model", TransformerConfig)
+    train_cfg = _load_config_from_artifacts(run_dir, "training", TrainingConfig)
+    return data_cfg, model_cfg, train_cfg
+
+
+def _save_rule_report(output_dir: Path, prefix: str, summary: Dict[RuleCategory, RuleMetrics]) -> Path:
+    report = {
+        rule.name.lower(): {
+            "total": metrics.total,
+            "correct": metrics.correct,
+            "accuracy": metrics.accuracy,
+        }
+        for rule, metrics in summary.items()
+    }
+    report_path = output_dir / f"{prefix}_rule_report.json"
+    report_path.write_text(json.dumps(report, indent=2))
+    LOGGER.info("Saved %s rule adherence report to %s", prefix, report_path)
+    return report_path
+
+
+def analyse_rule_adherence(
+        inputs: np.ndarray,
+        targets: np.ndarray,
+        probs: np.ndarray,
+        output_dir: Path,
+        prefix: str,
+) -> Dict[RuleCategory, RuleMetrics]:
+    """Aggregate how well the model applies Conway's rules across a dataset."""
+
+    LOGGER.info("Analysing Conway rule adherence for %s set...", prefix)
+    predictions_binary = (probs > 0.5).astype(int)
+    aggregate: Dict[RuleCategory, RuleMetrics] = {
+        rule: RuleMetrics(total=0, correct=0) for rule in RuleCategory
+    }
+
+    iterator = tqdm(
+        range(inputs.shape[0]),
+        desc=f"{prefix.capitalize()} rule analysis",
+        leave=False,
+    )
+    for idx in iterator:
+        per_rule = summarise_rule_accuracy(inputs[idx], predictions_binary[idx])
+        for rule, metrics in per_rule.items():
+            aggregate[rule].add_counts(metrics.total, metrics.correct)
+
+    _save_rule_report(output_dir, prefix, aggregate)
+
+    diag_path = output_dir / f"{prefix}_rule_diagnostics.png"
+    plot_rule_diagnostics(
+        x=inputs[0],
+        y_true=targets[0],
+        y_prob=probs[0],
+        title=f"{prefix.capitalize()} rule view",
+        save_path=diag_path,
+    )
+    LOGGER.info("Saved %s rule diagnostic plot to %s", prefix, diag_path)
+    return aggregate
 
 
 def _record_history(output_dir: Path, history: Dict[str, list]) -> None:
@@ -473,7 +556,12 @@ def train_and_evaluate(
             )
             epoch_losses, epoch_accs = [], []
 
-            for batch in batches:
+            for batch in tqdm(
+                    batches,
+                    total=steps_per_epoch,
+                    desc=f"Epoch {epoch}/{train_cfg.num_epochs} [train]",
+                    leave=False,
+            ):
                 epoch_key, step_key = jax.random.split(epoch_key)
                 state, metrics = train_step(state, batch, step_key)
                 epoch_losses.append(metrics["loss"])
@@ -483,7 +571,7 @@ def train_and_evaluate(
             train_acc = float(jnp.stack(epoch_accs).mean())
 
             val_loss, val_acc, _ = _evaluate_dataset(
-                state, eval_step, splits.x_val, splits.y_val, train_cfg.batch_size
+                state, eval_step, splits.x_val, splits.y_val, train_cfg.batch_size, desc=f"Epoch {epoch} [val]"
             )
             lr_value = float(lr_schedule(int(state.step)))
 
@@ -528,7 +616,7 @@ def train_and_evaluate(
 
         # Test evaluation
         test_loss, test_acc, logits_concat = _evaluate_dataset(
-            state, eval_step, splits.x_test, splits.y_test, train_cfg.batch_size
+            state, eval_step, splits.x_test, splits.y_test, train_cfg.batch_size, desc="Testing"
         )
         LOGGER.info("Test loss=%.4f accuracy=%.4f", test_loss, test_acc)
 
@@ -539,6 +627,14 @@ def train_and_evaluate(
         calib_df = pd.DataFrame({"bin_center": bin_centers, "empirical_freq": empirical_freq})
         calib_df.to_csv(output_root / "calibration_curve.csv", index=False)
         LOGGER.info("Saved calibration diagnostics to %s", calibration_path)
+
+        rule_summary = analyse_rule_adherence(
+            inputs=splits.x_test,
+            targets=splits.y_test,
+            probs=np.asarray(probs),
+            output_dir=output_root,
+            prefix="test",
+        )
 
         # Example prediction plots on the test set
         example_pred_path = output_root / "test_prediction_triplet.png"
@@ -621,6 +717,14 @@ def train_and_evaluate(
                 title=f"Generalisation on {gen_height}x{gen_width}",
             )
 
+            generalization_rules = analyse_rule_adherence(
+                inputs=gen_inputs,
+                targets=gen_targets,
+                probs=np.asarray(gen_probs),
+                output_dir=output_root,
+                prefix="generalization",
+            )
+
             generalization_summary = {
                 "height": gen_height,
                 "width": gen_width,
@@ -628,6 +732,14 @@ def train_and_evaluate(
                 "loss": gen_loss,
                 "accuracy": gen_acc,
                 "density_mean": float(np.mean(densities)),
+                "rule_adherence": {
+                    rule.name.lower(): {
+                        "total": metrics.total,
+                        "correct": metrics.correct,
+                        "accuracy": metrics.accuracy,
+                    }
+                    for rule, metrics in generalization_rules.items()
+                },
             }
             LOGGER.info(
                 "Generalisation eval on %dx%d: loss=%.4f acc=%.4f",
@@ -647,6 +759,14 @@ def train_and_evaluate(
                 "train": float(np.mean(splits.densities_train)) if splits.densities_train is not None else None,
                 "val": float(np.mean(splits.densities_val)) if splits.densities_val is not None else None,
                 "test": float(np.mean(splits.densities_test)) if splits.densities_test is not None else None,
+            },
+            "rule_adherence": {
+                rule.name.lower(): {
+                    "total": metrics.total,
+                    "correct": metrics.correct,
+                    "accuracy": metrics.accuracy,
+                }
+                for rule, metrics in rule_summary.items()
             },
         }
         if roc_summary is not None:
@@ -671,13 +791,18 @@ def load_params(checkpoint_path: Path, model: GameOfLifeTransformer, input_shape
 
 def generate_predictions(
         checkpoint_path: Path,
-        model_cfg: TransformerConfig,
+        model_cfg: TransformerConfig | None,
         inputs: np.ndarray,
         batch_size: int,
 ) -> np.ndarray:
     """Run a trained model in generation/evaluation mode."""
 
-    model = GameOfLifeTransformer(config=model_cfg)
+    run_dir = checkpoint_path.parent.parent
+    saved_cfg = _load_config_from_artifacts(run_dir, "model", TransformerConfig)
+    active_cfg = saved_cfg or model_cfg or TransformerConfig()
+    LOGGER.info("Using model configuration: %s", active_cfg)
+
+    model = GameOfLifeTransformer(config=active_cfg)
     state = load_params(checkpoint_path, model, (inputs.shape[1], inputs.shape[2]))
 
     def forward(params, x_batch):
@@ -688,7 +813,7 @@ def generate_predictions(
 
     num_samples = inputs.shape[0]
     outputs = np.empty_like(inputs, dtype=np.float32)
-    for start in range(0, num_samples, batch_size):
+    for start in tqdm(range(0, num_samples, batch_size), desc="Generating", leave=False):
         end = min(start + batch_size, num_samples)
         x_batch = jnp.array(inputs[start:end])
         probs = forward_jit(state.params, x_batch)

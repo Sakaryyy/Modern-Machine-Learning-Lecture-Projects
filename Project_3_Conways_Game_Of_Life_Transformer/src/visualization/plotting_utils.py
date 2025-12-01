@@ -3,8 +3,14 @@ from typing import Dict, Sequence, Tuple
 import numpy as np
 import seaborn as sns
 from matplotlib import pyplot as plt
+from matplotlib.colors import ListedColormap
 
 from Project_3_Conways_Game_Of_Life_Transformer.src.training.metrics import calibration_curve
+from Project_3_Conways_Game_Of_Life_Transformer.src.utils.rule_analysis import (
+    RuleCategory,
+    compute_rule_categories,
+    conway_neighbor_counts,
+)
 
 
 def set_scientific_plot_style() -> None:
@@ -98,7 +104,10 @@ def plot_training_curves(
     if save_path is not None:
         fig.savefig(save_path, bbox_inches="tight")
 
-    plt.show()
+    if save_path is not None:
+        fig.savefig(save_path, bbox_inches="tight")
+
+    plt.close(fig)
 
 
 # ---------------------------------------------------------------------
@@ -146,7 +155,10 @@ def plot_grid_pair_examples(
     if save_path is not None:
         fig.savefig(save_path, bbox_inches="tight")
 
-    plt.show()
+    if save_path is not None:
+        fig.savefig(save_path, bbox_inches="tight")
+
+    plt.close(fig)
 
 
 def plot_grid_triplet(
@@ -184,7 +196,7 @@ def plot_grid_triplet(
     if save_path is not None:
         fig.savefig(save_path, bbox_inches="tight")
 
-    plt.show()
+    plt.close(fig)
 
 
 def plot_grid_difference(
@@ -250,7 +262,7 @@ def plot_grid_difference(
     if save_path is not None:
         fig.savefig(save_path, bbox_inches="tight")
 
-    plt.show()
+    plt.close(fig)
 
 
 def plot_score_histograms(
@@ -307,7 +319,7 @@ def plot_score_histograms(
     if save_path is not None:
         fig.savefig(save_path, bbox_inches="tight")
 
-    plt.show()
+    plt.close(fig)
 
 
 def plot_roc_curve(
@@ -368,7 +380,7 @@ def plot_multiple_roc_curves(
     if save_path is not None:
         fig.savefig(save_path, dpi=150, bbox_inches="tight")
 
-    plt.show()
+    plt.close(fig)
 
 
 def plot_calibration_curve(
@@ -412,4 +424,60 @@ def plot_calibration_curve(
     if save_path is not None:
         fig.savefig(save_path, bbox_inches="tight")
 
-    plt.show()
+        plt.close(fig)
+
+
+def plot_rule_diagnostics(
+        x: np.ndarray,
+        y_true: np.ndarray,
+        y_prob: np.ndarray,
+        title: str,
+        save_path: str | None = None,
+) -> None:
+    """Visualize how Conway's rules explain predictions.
+
+    The plot shows the input board, neighbor counts, deterministic rule
+    outcome, model probability heatmap, binary prediction, and a rule
+    category map that highlights which rule applies at each cell.
+    """
+
+    neighbors = conway_neighbor_counts(x)
+    deterministic_next, rule_categories = compute_rule_categories(x, neighbors)
+    y_pred_binary = (y_prob > 0.5).astype(int)
+
+    cmap_rules = ListedColormap([
+        "#1b9e77",  # survival
+        "#d95f02",  # birth
+        "#7570b3",  # death
+        "#666666",  # stays dead
+    ])
+    rule_titles = {
+        RuleCategory.SURVIVES: "Survival (alive with 2/3 neighbors)",
+        RuleCategory.BIRTH: "Birth (dead with 3 neighbors)",
+        RuleCategory.DIES: "Death (alive with <2 or >3 neighbors)",
+        RuleCategory.STAYS_DEAD: "Stays dead",
+    }
+
+    fig, axes = plt.subplots(2, 3, figsize=(10, 6))
+    _imshow_grid(axes[0, 0], x, title="Input $x_t$")
+    _imshow_grid(axes[0, 1], neighbors, title="Neighbor counts", cmap="magma", vmin=0, vmax=8)
+    _imshow_grid(axes[0, 2], deterministic_next, title="Deterministic rule output", cmap="Greys", vmin=0, vmax=1)
+    _imshow_grid(axes[1, 0], y_true, title="Dataset target", cmap="Greys", vmin=0, vmax=1)
+    _imshow_grid(axes[1, 1], y_prob, title="Model $p(x_{t+1}=1)$", cmap="viridis", vmin=0, vmax=1)
+    im = axes[1, 2].imshow(rule_categories, cmap=cmap_rules, origin="lower", vmin=0, vmax=len(RuleCategory) - 1)
+    axes[1, 2].set_xticks([])
+    axes[1, 2].set_yticks([])
+    axes[1, 2].set_title("Rule category map")
+
+    # Custom legend for rule categories
+    from matplotlib.patches import Patch
+    legend_patches = [Patch(color=cmap_rules(rule.value), label=rule_titles[rule]) for rule in RuleCategory]
+    axes[1, 2].legend(handles=legend_patches, loc="upper right", fontsize=8)
+
+    fig.suptitle(title)
+    fig.tight_layout(rect=[0, 0.02, 1, 0.95])
+
+    if save_path is not None:
+        fig.savefig(save_path, bbox_inches="tight")
+
+    plt.close(fig)
