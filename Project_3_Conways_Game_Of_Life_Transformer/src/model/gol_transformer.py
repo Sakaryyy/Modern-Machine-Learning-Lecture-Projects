@@ -233,16 +233,26 @@ class TransformerBlock(nn.Module):
             num_heads=self.num_heads,
             qkv_features=self.d_model,
             dropout_rate=self.dropout_rate,
+            kernel_init=nn.initializers.xavier_uniform(),
+            bias_init=nn.initializers.zeros,
             deterministic=not train,
         )(y, mask=combined_bias)
         x = x + y
 
         # Feed forward sub layer
         y = nn.LayerNorm()(x)
-        y = nn.Dense(self.mlp_dim)(y)
+        y = nn.Dense(
+            self.mlp_dim,
+            kernel_init=nn.initializers.xavier_uniform(),
+            bias_init=nn.initializers.zeros,
+        )(y)
         y = nn.gelu(y)
         y = nn.Dropout(rate=self.dropout_rate)(y, deterministic=not train)
-        y = nn.Dense(self.d_model)(y)
+        y = nn.Dense(
+            self.d_model,
+            kernel_init=nn.initializers.xavier_uniform(),
+            bias_init=nn.initializers.zeros,
+        )(y)
         y = nn.Dropout(rate=self.dropout_rate)(y, deterministic=not train)
 
         return x + y
@@ -303,7 +313,11 @@ class GameOfLifeTransformer(nn.Module):
         features = jnp.concatenate(feature_list, axis=-1)  # (B, H, W, C)
         features = features.reshape(batch_size, length, features.shape[-1])
 
-        h = nn.Dense(self.config.d_model)(features)
+        h = nn.Dense(
+            self.config.d_model,
+            kernel_init=nn.initializers.xavier_uniform(),
+            bias_init=nn.initializers.zeros,
+        )(features)
 
         # Optional local attention mask
         if self.config.use_local_attention:
@@ -331,6 +345,10 @@ class GameOfLifeTransformer(nn.Module):
                 dropout_rate=self.config.dropout_rate,
             )(h, mask=mask, attn_bias=attn_bias, train=train)
 
-        logits = nn.Dense(1)(h)
+        logits = nn.Dense(
+            1,
+            kernel_init=nn.initializers.xavier_uniform(),
+            bias_init=nn.initializers.zeros,
+        )(h)
         logits = logits.reshape(batch_size, height, width)
         return logits

@@ -155,6 +155,19 @@ def build_training_config(section: Dict[str, Any], args: argparse.Namespace) -> 
         "learning_rate": args.learning_rate,
         "num_epochs": args.epochs,
         "batch_size": args.batch_size,
+        "optimizer": args.optimizer,
+        "weight_decay": args.weight_decay,
+        "lr_schedule": args.lr_schedule,
+        "warmup_steps": args.warmup_steps,
+        "decay_steps": args.decay_steps,
+        "min_lr_ratio": args.min_lr_ratio,
+        "max_grad_norm": args.max_grad_norm,
+        "l2_reg": args.l2_reg,
+        "eval_larger_lattice": args.eval_larger_lattice,
+        "larger_height": args.larger_height,
+        "larger_width": args.larger_width,
+        "num_generalization_samples": args.num_generalization_samples,
+        "generalization_density": args.generalization_density,
     }
     for key, value in overrides.items():
         if value is not None:
@@ -214,6 +227,28 @@ def parse_args() -> argparse.Namespace:
     train_parser.add_argument("--learning-rate", type=float, help="Learning rate for training")
     train_parser.add_argument("--epochs", type=int, help="Number of training epochs")
     train_parser.add_argument("--batch-size", type=int, help="Mini-batch size for optimization")
+    train_parser.add_argument(
+        "--optimizer",
+        type=str,
+        choices=["adamw", "adam", "sgd"],
+        help="Optimizer to use during training",
+    )
+    train_parser.add_argument("--weight-decay", type=float, help="Weight decay for regularisation")
+    train_parser.add_argument(
+        "--lr-schedule",
+        type=str,
+        choices=["constant", "cosine", "linear"],
+        help="Learning rate schedule type",
+    )
+    train_parser.add_argument("--warmup-steps", type=int, help="Number of warmup steps for LR schedule")
+    train_parser.add_argument("--decay-steps", type=int, help="Number of decay steps for LR schedule")
+    train_parser.add_argument(
+        "--min-lr-ratio",
+        type=float,
+        help="Final LR as fraction of peak learning rate for schedulers",
+    )
+    train_parser.add_argument("--max-grad-norm", type=float, help="Gradient clipping threshold")
+    train_parser.add_argument("--l2-reg", type=float, help="L2 regularisation weight added to the loss")
     train_parser.add_argument("--d-model", type=int, help="Transformer hidden dimension")
     train_parser.add_argument("--num-heads", type=int, help="Number of attention heads")
     train_parser.add_argument("--num-layers", type=int, help="Number of transformer blocks")
@@ -245,6 +280,24 @@ def parse_args() -> argparse.Namespace:
         help="Force regeneration of cached datasets even if present.",
     )
     train_parser.add_argument(
+        "--eval-larger-lattice",
+        action=BooleanOptionalAction,
+        default=None,
+        help="Evaluate on a larger lattice after training",
+    )
+    train_parser.add_argument("--larger-height", type=int, help="Height for larger lattice evaluation")
+    train_parser.add_argument("--larger-width", type=int, help="Width for larger lattice evaluation")
+    train_parser.add_argument(
+        "--num-generalization-samples",
+        type=int,
+        help="Number of samples for the larger lattice generalisation eval",
+    )
+    train_parser.add_argument(
+        "--generalization-density",
+        type=float,
+        help="Optional fixed density for larger lattice evaluation",
+    )
+    train_parser.add_argument(
         "--output-dir",
         type=Path,
         help="Directory for training artefacts. Defaults to logging.output_dir from the config file.",
@@ -255,7 +308,7 @@ def parse_args() -> argparse.Namespace:
     gen_parser.add_argument("--checkpoint", type=Path, required=True, help="Path to model checkpoint")
     gen_parser.add_argument("--height", type=int, help="Height of generated grids; defaults to config file")
     gen_parser.add_argument("--width", type=int, help="Width of generated grids; defaults to config file")
-    gen_parser.add_argument("--batch-size", type=int, default=32)
+    gen_parser.add_argument("--batch-size", type=int, default=64)
     gen_parser.add_argument("--num-samples", type=int, default=16, help="Number of random grids to generate")
     gen_parser.add_argument("--density", type=float, help="Fixed density for generation if density-range is absent")
     gen_parser.add_argument(

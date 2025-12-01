@@ -60,7 +60,11 @@ def plot_training_curves(
     """
     epochs = np.arange(1, len(history["train_loss"]) + 1)
 
-    fig, axes = plt.subplots(1, 2, figsize=(9, 3.5))
+    has_lr = "learning_rate" in history
+    has_gap = "train_val_gap" in history
+    n_cols = 2 + int(has_lr or has_gap)
+
+    fig, axes = plt.subplots(1, n_cols, figsize=(4.5 * n_cols, 3.5))
 
     ax = axes[0]
     ax.plot(epochs, history["train_loss"], label="train")
@@ -69,6 +73,16 @@ def plot_training_curves(
     ax.set_ylabel("Binary cross entropy")
     ax.set_title("Loss")
     ax.legend()
+
+    if n_cols > 2:
+        ax = axes[2]
+        if has_lr:
+            ax.plot(epochs, history["learning_rate"], label="learning rate")
+        if has_gap:
+            ax.plot(epochs, history["train_val_gap"], label="train - val acc")
+        ax.set_xlabel("Epoch")
+        ax.set_title("Optimisation diagnostics")
+        ax.legend()
 
     ax = axes[1]
     ax.plot(epochs, history["train_accuracy"], label="train")
@@ -107,12 +121,41 @@ def _imshow_grid(
     plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
 
 
+def plot_grid_pair_examples(
+        inputs: np.ndarray,
+        targets: np.ndarray,
+        title: str = "Example transitions",
+        save_path: str | None = None,
+) -> None:
+    """Plot a vertical grid of (input, target) pairs from the dataset."""
+
+    num_examples = int(min(inputs.shape[0], targets.shape[0]))
+    if num_examples == 0:
+        return
+
+    fig, axes = plt.subplots(num_examples, 2, figsize=(6, 2.5 * num_examples))
+    axes = np.atleast_2d(axes)
+
+    for idx in range(num_examples):
+        _imshow_grid(axes[idx, 0], inputs[idx], title=f"Input t (sample {idx})")
+        _imshow_grid(axes[idx, 1], targets[idx], title=f"Target t+1 (sample {idx})")
+
+    fig.suptitle(title)
+    fig.tight_layout(rect=[0, 0.02, 1, 0.98])
+
+    if save_path is not None:
+        fig.savefig(save_path, bbox_inches="tight")
+
+    plt.show()
+
+
 def plot_grid_triplet(
         x: np.ndarray,
         y_true: np.ndarray,
         y_prob: np.ndarray,
         figsize: Tuple[float, float] = (9.0, 3.0),
         save_path: str = None,
+        title: str = None,
 ) -> None:
     """Visualize input, target, and predicted probabilities.
 
@@ -129,9 +172,9 @@ def plot_grid_triplet(
         Figure size in inches.
     save_path : str or None, optional
         Optional path to save the figure as PNG.
+    title : str, optional
     """
     fig, axes = plt.subplots(1, 3, figsize=figsize)
-
     _imshow_grid(axes[0], x, title="Input $x_t$", cmap="Greys", vmin=0.0, vmax=1.0)
     _imshow_grid(axes[1], y_true, title="Target $x_{t+1}$", cmap="Greys", vmin=0.0, vmax=1.0)
     _imshow_grid(axes[2], y_prob, title="Predicted $p(x_{t+1}=1|x_t)$", cmap="viridis", vmin=0.0, vmax=1.0)
