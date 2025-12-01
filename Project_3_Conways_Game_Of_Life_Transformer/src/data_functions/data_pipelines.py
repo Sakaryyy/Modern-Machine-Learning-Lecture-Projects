@@ -3,9 +3,17 @@ from typing import Tuple
 
 import numpy as np
 
-from Project_3_Conways_Game_Of_Life_Transformer.src.config.data_config import DataConfig, DatasetSplits
-from Project_3_Conways_Game_Of_Life_Transformer.src.data_functions.conway_rules import conway_step_periodic, \
-    stochastic_step_mixed_rules
+from Project_3_Conways_Game_Of_Life_Transformer.src.config.data_config import (
+    DataConfig,
+    DatasetSplits,
+)
+from Project_3_Conways_Game_Of_Life_Transformer.src.data_functions.conway_rules import (
+    conway_step_periodic,
+    stochastic_step_mixed_rules,
+)
+from Project_3_Conways_Game_Of_Life_Transformer.src.utils.logging import get_logger
+
+Logger = get_logger(__name__)
 
 
 def sample_random_grid(
@@ -417,10 +425,10 @@ def prepare_gol_dataset(config: DataConfig) -> DatasetSplits:
     path = _build_cache_path(config)
 
     if config.use_cache and path.exists() and not config.overwrite_cache:
-        print(f"Loading cached dataset from {path}")
+        Logger.info("Loading cached dataset from %s", path)
         return _load_cached_dataset(path)
 
-    print(f"No valid cache at {path}, generating new dataset")
+    Logger.info("No valid cache at %s, generating new dataset", path)
     np_rng = np.random.default_rng(config.seed)
 
     # Generate full dataset
@@ -500,6 +508,5 @@ def prepare_gol_dataset(config: DataConfig) -> DatasetSplits:
 
     # Persist to cache
     _save_cached_dataset(path, splits)
-    print(f"Saved dataset to {path}")
-
+    Logger.info("Saved dataset to %s", path)
     return splits
