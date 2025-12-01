@@ -1,3 +1,5 @@
+"""Metric utilities for evaluating binary Game of Life predictions."""
+
 from typing import Tuple
 
 import jax

@@ -1,5 +1,6 @@
 """Training and evaluation utilities for the Conway Transformer."""
 
+import contextlib
 import json
 from dataclasses import asdict
 from pathlib import Path
@@ -30,10 +31,18 @@ from Project_3_Conways_Game_Of_Life_Transformer.src.training.metrics import (
     accuracy_from_logits,
     calibration_curve,
     compute_auc,
+    compute_brier_score,
     compute_roc_curve,
     negative_log_likelihood_scores,
 )
+from Project_3_Conways_Game_Of_Life_Transformer.src.utils.backend import log_jax_runtime_info
 from Project_3_Conways_Game_Of_Life_Transformer.src.utils.logging import get_logger
+from Project_3_Conways_Game_Of_Life_Transformer.src.utils.parameter_analysis import (
+    count_parameters,
+    estimate_attention_activation_memory,
+    estimate_attention_flops,
+    estimate_parameter_memory,
+)
 from Project_3_Conways_Game_Of_Life_Transformer.src.visualization.plotting_utils import (
     plot_calibration_curve,
     plot_multiple_roc_curves,
@@ -45,13 +54,42 @@ LOGGER = get_logger(__name__)
 
 
 def data_loader(
-        inputs: np.ndarray, targets: np.ndarray, batch_size: int, rng: np.random.Generator
+        inputs: np.ndarray,
+        targets: np.ndarray,
+        batch_size: int,
+        rng: np.random.Generator | None,
+        shuffle: bool = True,
 ) -> Iterable[Dict[str, np.ndarray]]:
-    """Yield shuffled mini-batches as dictionaries."""
+    """Yield mini-batches as dictionaries without materializing copies.
+
+    Parameters
+    ----------
+    inputs : np.ndarray
+        Array of input states.
+    targets : np.ndarray
+        Array of target states aligned with ``inputs``.
+    batch_size : int
+        Number of samples per batch.
+    rng : np.random.Generator or None
+        Random generator used for shuffling. Must be provided when
+        ``shuffle`` is True.
+    shuffle : bool, optional
+        If True shuffle indices before batching. Validation and test
+        loaders set this to False to keep deterministic ordering.
+
+    Yields
+    ------
+    dict
+        Dictionary with keys ``"x"`` and ``"y"`` containing batch views.
+    """
 
     num_samples = inputs.shape[0]
-    indices = np.arange(num_samples)
-    rng.shuffle(indices)
+    if shuffle:
+        if rng is None:
+            raise ValueError("rng must be provided when shuffle=True")
+        indices = rng.permutation(num_samples)
+    else:
+        indices = np.arange(num_samples)
 
     for start in range(0, num_samples, batch_size):
         end = min(start + batch_size, num_samples)
@@ -200,7 +238,7 @@ def _save_configs(output_dir: Path, data_cfg: DataConfig, model_cfg: Transformer
     (output_dir / "configs").mkdir(parents=True, exist_ok=True)
     for name, cfg in {"data": data_cfg, "model": model_cfg, "training": train_cfg}.items():
         cfg_path = output_dir / "configs" / f"{name}.json"
-        cfg_path.write_text(json.dumps(asdict(cfg), indent=2))
+        cfg_path.write_text(json.dumps(asdict(cfg), indent=2, default=str))
         LOGGER.info("Saved %s configuration to %s", name, cfg_path)
 
 
@@ -224,99 +262,191 @@ def train_and_evaluate(
 
     output_root.mkdir(parents=True, exist_ok=True)
     _save_configs(output_root, data_cfg, model_cfg, train_cfg)
-
     set_scientific_plot_style()
 
-    rng = np.random.default_rng(seed)
-    splits = prepare_gol_dataset(data_cfg)
+    preferred_device = log_jax_runtime_info()
+    device_context = (
+        jax.default_device(preferred_device)
+        if hasattr(jax, "default_device")
+        else contextlib.nullcontext()
+    )
 
-    model = GameOfLifeTransformer(config=model_cfg)
-    key = jax.random.PRNGKey(seed)
-    state = create_train_state(key, model, (data_cfg.height, data_cfg.width), train_cfg)
-    train_step, eval_step = make_train_and_eval_step(model)
-
-    history = {"train_loss": [], "train_accuracy": [], "val_loss": [], "val_accuracy": []}
-
-    for epoch in range(1, train_cfg.num_epochs + 1):
-        key, epoch_key = jax.random.split(key)
-        batches = data_loader(splits.x_train, splits.y_train, train_cfg.batch_size, rng)
-        epoch_losses, epoch_accs = [], []
-
-        for batch in batches:
-            epoch_key, step_key = jax.random.split(epoch_key)
-            key, step_key = jax.random.split(key)
-            state, metrics = train_step(state, batch, step_key)
-            epoch_losses.append(metrics["loss"])
-            epoch_accs.append(metrics["accuracy"])
-
-        train_loss = float(jnp.stack(epoch_losses).mean())
-        train_acc = float(jnp.stack(epoch_accs).mean())
-
-        val_batches = data_loader(splits.x_val, splits.y_val, train_cfg.batch_size, rng)
-        val_loss_list, val_acc_list = [], []
-        for batch in val_batches:
-            metrics = eval_step(state, batch)
-            val_loss_list.append(metrics["loss"])
-            val_acc_list.append(metrics["accuracy"])
-
-        val_loss = float(jnp.stack(val_loss_list).mean())
-        val_acc = float(jnp.stack(val_acc_list).mean())
-
-        history["train_loss"].append(train_loss)
-        history["train_accuracy"].append(train_acc)
-        history["val_loss"].append(val_loss)
-        history["val_accuracy"].append(val_acc)
+    with device_context:
+        splits = prepare_gol_dataset(data_cfg)
 
         LOGGER.info(
-            "Epoch %03d train_loss=%.4f train_acc=%.4f val_loss=%.4f val_acc=%.4f",
-            epoch,
-            train_loss,
-            train_acc,
-            val_loss,
-            val_acc,
+            "Loaded dataset with shapes train=%s val=%s test=%s",
+            splits.x_train.shape,
+            splits.x_val.shape,
+            splits.x_test.shape,
         )
 
-        _save_checkpoint(output_root, state, epoch)
+        model = GameOfLifeTransformer(config=model_cfg)
+        key = jax.random.PRNGKey(seed)
+        state = create_train_state(key, model, (data_cfg.height, data_cfg.width), train_cfg)
+        train_step, eval_step = make_train_and_eval_step(model)
 
-    plot_training_curves(history, title="Training diagnostics", save_path=output_root / "training_curves.png")
-    _record_history(output_root, history)
+        num_params = count_parameters(state.params)
+        param_mem_mb = estimate_parameter_memory(num_params)
+        attn_layer_mb, attn_total_mb = estimate_attention_activation_memory(
+            batch_size=train_cfg.batch_size,
+            height=data_cfg.height,
+            width=data_cfg.width,
+            config=model_cfg,
+        )
+        attn_flops = estimate_attention_flops(
+            batch_size=train_cfg.batch_size,
+            height=data_cfg.height,
+            width=data_cfg.width,
+            config=model_cfg,
+        )
+        analysis = {
+            "num_parameters": num_params,
+            "parameter_memory_mb": param_mem_mb,
+            "attention_memory_per_layer_mb": attn_layer_mb,
+            "attention_memory_total_mb": attn_total_mb,
+            "attention_flops": attn_flops,
+            "device": str(preferred_device),
+        }
+        analysis_path = output_root / "analysis" / "parameter_report.json"
+        analysis_path.parent.mkdir(parents=True, exist_ok=True)
+        analysis_path.write_text(json.dumps(analysis, indent=2))
+        LOGGER.info(
+            "Parameter report saved to %s (params=%d, memory=%.2f MB)",
+            analysis_path,
+            num_params,
+            param_mem_mb,
+        )
 
-    # Test evaluation
-    test_batches = data_loader(splits.x_test, splits.y_test, train_cfg.batch_size, rng)
-    test_loss_list, test_acc_list = [], []
-    logits_all = []
-    for batch in test_batches:
-        metrics = eval_step(state, batch)
-        test_loss_list.append(metrics["loss"])
-        test_acc_list.append(metrics["accuracy"])
-        logits_all.append(np.array(metrics["logits"]))
+        history = {
+            "train_loss": [],
+            "train_accuracy": [],
+            "val_loss": [],
+            "val_accuracy": [],
+        }
 
-    test_loss = float(jnp.stack(test_loss_list).mean())
-    test_acc = float(jnp.stack(test_acc_list).mean())
-    LOGGER.info("Test loss=%.4f accuracy=%.4f", test_loss, test_acc)
+        for epoch in range(1, train_cfg.num_epochs + 1):
+            key, epoch_key = jax.random.split(key)
+            epoch_rng = np.random.default_rng(seed + epoch)
+            batches = data_loader(
+                splits.x_train,
+                splits.y_train,
+                train_cfg.batch_size,
+                rng=epoch_rng,
+                shuffle=True,
+            )
+            epoch_losses, epoch_accs = [], []
 
-    logits_concat = np.concatenate(logits_all, axis=0)
-    probs = jax.nn.sigmoid(logits_concat)
-    bin_centers, empirical_freq = calibration_curve(probs, splits.y_test)
-    plot_calibration_curve(probs, splits.y_test, save_path=output_root / "calibration_curve.png")
+            for batch in batches:
+                epoch_key, step_key = jax.random.split(epoch_key)
+                state, metrics = train_step(state, batch, step_key)
+                epoch_losses.append(metrics["loss"])
+                epoch_accs.append(metrics["accuracy"])
 
-    calib_df = pd.DataFrame({"bin_center": bin_centers, "empirical_freq": empirical_freq})
-    calib_df.to_csv(output_root / "calibration_curve.csv", index=False)
+            train_loss = float(jnp.stack(epoch_losses).mean())
+            train_acc = float(jnp.stack(epoch_accs).mean())
 
-    # Optional anomaly evaluation
-    if data_cfg.anomaly_detection and splits.labels_test is not None:
+            val_batches = data_loader(
+                splits.x_val,
+                splits.y_val,
+                train_cfg.batch_size,
+                rng=None,
+                shuffle=False,
+            )
+            val_loss_list, val_acc_list = [], []
+            for batch in val_batches:
+                metrics = eval_step(state, batch)
+                val_loss_list.append(metrics["loss"])
+                val_acc_list.append(metrics["accuracy"])
+
+            val_loss = float(jnp.stack(val_loss_list).mean())
+            val_acc = float(jnp.stack(val_acc_list).mean())
+
+            history["train_loss"].append(train_loss)
+            history["train_accuracy"].append(train_acc)
+            history["val_loss"].append(val_loss)
+            history["val_accuracy"].append(val_acc)
+
+            LOGGER.info(
+                "Epoch %03d train_loss=%.4f train_acc=%.4f val_loss=%.4f val_acc=%.4f",
+                epoch,
+                train_loss,
+                train_acc,
+                val_loss,
+                val_acc,
+            )
+
+            _save_checkpoint(output_root, state, epoch)
+
+        training_plot_path = output_root / "training_curves.png"
+        plot_training_curves(history, title="Training diagnostics", save_path=training_plot_path)
+        LOGGER.info("Saved training curves to %s", training_plot_path)
+        _record_history(output_root, history)
+
+        # Test evaluation
+        test_batches = data_loader(
+            splits.x_test,
+            splits.y_test,
+            train_cfg.batch_size,
+            rng=None,
+            shuffle=False,
+        )
+        test_loss_list, test_acc_list = [], []
+        logits_all = []
+        for batch in test_batches:
+            metrics = eval_step(state, batch)
+            test_loss_list.append(metrics["loss"])
+            test_acc_list.append(metrics["accuracy"])
+            logits_all.append(np.array(metrics["logits"]))
+
+        test_loss = float(jnp.stack(test_loss_list).mean())
+        test_acc = float(jnp.stack(test_acc_list).mean())
+        LOGGER.info("Test loss=%.4f accuracy=%.4f", test_loss, test_acc)
+
+        logits_concat = np.concatenate(logits_all, axis=0)
+        probs = jax.nn.sigmoid(logits_concat)
+        bin_centers, empirical_freq = calibration_curve(probs, splits.y_test)
+        calibration_path = output_root / "calibration_curve.png"
+        plot_calibration_curve(probs, splits.y_test, save_path=calibration_path)
+        calib_df = pd.DataFrame({"bin_center": bin_centers, "empirical_freq": empirical_freq})
+        calib_df.to_csv(output_root / "calibration_curve.csv", index=False)
+        LOGGER.info("Saved calibration diagnostics to %s", calibration_path)
+
         log_likelihoods = log_likelihood_from_logits(jnp.array(logits_concat), jnp.array(splits.y_test))
-        scores = negative_log_likelihood_scores(np.array(log_likelihoods))
-        _, fpr, tpr = compute_roc_curve(scores=scores, labels=splits.labels_test)
-        auc = compute_auc(fpr, tpr)
-        LOGGER.info("Anomaly ROC AUC=%.4f", auc)
-        plot_multiple_roc_curves({f"H{data_cfg.height}W{data_cfg.width}": (fpr, tpr)},
-                                 save_path=output_root / "roc_curve.png")
-        pd.DataFrame({"fpr": fpr, "tpr": tpr}).to_csv(output_root / "roc_curve.csv", index=False)
+        test_nll = float(-log_likelihoods.mean())
+        test_brier = compute_brier_score(np.asarray(probs), np.asarray(splits.y_test))
 
-    metrics_path = output_root / "summary.json"
-    metrics_path.write_text(json.dumps({"test_loss": test_loss, "test_accuracy": test_acc}, indent=2))
-    LOGGER.info("Wrote summary to %s", metrics_path)
+        roc_summary = None
+        if data_cfg.anomaly_detection and splits.labels_test is not None:
+            scores = negative_log_likelihood_scores(np.array(log_likelihoods))
+            thresholds, fpr, tpr = compute_roc_curve(scores=scores, labels=splits.labels_test)
+            auc = compute_auc(fpr, tpr)
+            LOGGER.info("Anomaly ROC AUC=%.4f", auc)
+            roc_path = output_root / "roc_curve.png"
+            plot_multiple_roc_curves({f"H{data_cfg.height}W{data_cfg.width}": (fpr, tpr)},
+                                     save_path=roc_path)
+            pd.DataFrame({"threshold": thresholds, "fpr": fpr, "tpr": tpr}).to_csv(
+                output_root / "roc_curve.csv", index=False
+            )
+            LOGGER.info("Saved ROC curve to %s", roc_path)
+            roc_summary = {"auc": auc}
+
+        metrics_path = output_root / "summary.json"
+        summary_payload = {
+            "test_loss": test_loss,
+            "test_accuracy": test_acc,
+            "test_brier_score": test_brier,
+            "test_negative_log_likelihood": test_nll,
+            "density_means": {
+                "train": float(np.mean(splits.densities_train)) if splits.densities_train is not None else None,
+                "val": float(np.mean(splits.densities_val)) if splits.densities_val is not None else None,
+                "test": float(np.mean(splits.densities_test)) if splits.densities_test is not None else None,
+            },
+        }
+        if roc_summary is not None:
+            summary_payload.update(roc_summary)
+        metrics_path.write_text(json.dumps(summary_payload, indent=2))
+        LOGGER.info("Wrote summary to %s", metrics_path)
 
     return state, splits, output_root
 

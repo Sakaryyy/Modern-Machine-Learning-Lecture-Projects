@@ -54,9 +54,9 @@ def generate_deterministic_pairs(
         num_samples: int,
         height: int,
         width: int,
-        density: float,
+        densities: np.ndarray,
         rng: np.random.Generator,
-) -> Tuple[np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Generate deterministic Conway pairs (x, x').
 
     Parameters
@@ -67,8 +67,10 @@ def generate_deterministic_pairs(
         Lattice height.
     width : int
         Lattice width.
-    density : float
-        Bernoulli parameter for random initial states.
+    densities : np.ndarray
+        One-dimensional array of length ``num_samples`` containing the
+        Bernoulli parameter for each snapshot. Varying densities avoids
+        biasing the model toward a single occupancy level.
     rng : np.random.Generator
         Numpy random generator.
 
@@ -79,27 +81,30 @@ def generate_deterministic_pairs(
     targets : np.ndarray
         Array of shape (num_samples, height, width) with next states
         under the deterministic Conway rule 23/3.
+    densities : np.ndarray
+        Copy of the densities used for sampling, returned for caching
+        and reproducibility.
     """
     inputs = np.empty((num_samples, height, width), dtype=np.int32)
     targets = np.empty_like(inputs)
 
     for i in range(num_samples):
-        x = sample_random_grid(height, width, density, rng)
+        x = sample_random_grid(height, width, float(densities[i]), rng)
         y = conway_step_periodic(x)
         inputs[i] = x
         targets[i] = y
 
-    return inputs, targets
+    return inputs, targets, densities.copy()
 
 
 def generate_stochastic_pairs(
         num_samples: int,
         height: int,
         width: int,
-        density: float,
+        densities: np.ndarray,
         p: float,
         rng: np.random.Generator,
-) -> Tuple[np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Generate stochastic Game of Life pairs (x, x') at fixed p.
 
     Each pair is generated as follows. A random initial state x is drawn
@@ -116,8 +121,8 @@ def generate_stochastic_pairs(
         Lattice height.
     width : int
         Lattice width.
-    density : float
-        Bernoulli parameter for random initial states.
+    densities : np.ndarray
+        Bernoulli parameters for random initial states, one per sample.
     p : float
         Bias parameter for the stochastic rule. Must be in [0, 1].
     rng : np.random.Generator
@@ -138,24 +143,24 @@ def generate_stochastic_pairs(
     targets = np.empty_like(inputs)
 
     for i in range(num_samples):
-        x = sample_random_grid(height, width, density, rng)
+        x = sample_random_grid(height, width, float(densities[i]), rng)
         y = stochastic_step_mixed_rules(x, p=p, rng=rng)
         inputs[i] = x
         targets[i] = y
 
-    return inputs, targets
+    return inputs, targets, densities.copy()
 
 
 def generate_anomaly_pairs(
         num_samples: int,
         height: int,
         width: int,
-        density: float,
+        densities: np.ndarray,
         p_normal: float,
         p_anomaly: float,
         anomaly_fraction: float,
         rng: np.random.Generator,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Generate pairs (x, x') and labels for anomaly detection.
 
     A fraction of the samples are generated with a "normal" stochastic
@@ -170,8 +175,8 @@ def generate_anomaly_pairs(
         Lattice height.
     width : int
         Lattice width.
-    density : float
-        Bernoulli parameter for initial states.
+    densities : np.ndarray
+        Bernoulli parameters for initial states, one per sample.
     p_normal : float
         Bias parameter p for normal data, for example 0.8.
     p_anomaly : float
@@ -191,6 +196,8 @@ def generate_anomaly_pairs(
     labels : np.ndarray
         Integer array of shape (num_samples,) with 0 for normal samples
         and 1 for anomalies.
+    densities : np.ndarray
+        Copy of the densities used per snapshot for reproducibility.
     """
     if not (0.0 <= anomaly_fraction <= 1.0):
         raise ValueError("anomaly_fraction must be in [0, 1]")
@@ -209,7 +216,7 @@ def generate_anomaly_pairs(
 
     # Anomalous samples
     for idx in anom_idx:
-        x = sample_random_grid(height, width, density, rng)
+        x = sample_random_grid(height, width, float(densities[idx]), rng)
         y = stochastic_step_mixed_rules(x, p=p_anomaly, rng=rng)
         inputs[idx] = x
         targets[idx] = y
@@ -217,7 +224,7 @@ def generate_anomaly_pairs(
 
     # Normal samples
     for idx in normal_idx:
-        x = sample_random_grid(height, width, density, rng)
+        x = sample_random_grid(height, width, float(densities[idx]), rng)
         y = stochastic_step_mixed_rules(x, p=p_normal, rng=rng)
         inputs[idx] = x
         targets[idx] = y
@@ -226,12 +233,53 @@ def generate_anomaly_pairs(
     assert labels.sum() == num_anom
     assert (labels == 0).sum() == num_normal
 
-    return inputs, targets, labels
+    return inputs, targets, labels, densities.copy()
 
 
 def _sanitize_float_for_name(x: float) -> str:
     """Convert a float to a short string safe for file names."""
     return f"{x:.3f}".replace(".", "p")
+
+
+def _prepare_density_schedule(num_samples: int, config: DataConfig, rng: np.random.Generator) -> np.ndarray:
+    """Create a per-sample density schedule according to the configuration.
+
+    If ``config.density_range`` is provided, densities are drawn
+    independently from a uniform distribution on that interval.
+    Otherwise the fixed ``config.density`` value is repeated for every
+    sample. The schedule is returned as a ``float32`` array so it can be
+    cached alongside the snapshots.
+
+    Parameters
+    ----------
+    num_samples : int
+        Number of snapshot pairs to generate.
+    config : DataConfig
+        Data generation configuration containing density information.
+    rng : np.random.Generator
+        Random number generator used to sample densities.
+
+    Returns
+    -------
+    densities : np.ndarray
+        Array of shape ``(num_samples,)`` with the Bernoulli parameter
+        for each generated grid.
+    """
+    if config.density_range is not None:
+        low, high = config.density_range
+        densities = rng.uniform(low=low, high=high, size=(num_samples,)).astype(np.float32)
+        Logger.info(
+            "Sampling variable densities in [%.3f, %.3f] (mean=%.3f, std=%.3f)",
+            low,
+            high,
+            float(densities.mean()),
+            float(densities.std()),
+        )
+    else:
+        densities = np.full((num_samples,), fill_value=float(config.density), dtype=np.float32)
+        Logger.info("Using fixed density %.3f for all samples", float(config.density))
+
+    return densities
 
 
 def _build_cache_path(config: DataConfig) -> Path:
@@ -262,9 +310,13 @@ def _build_cache_path(config: DataConfig) -> Path:
             f"H{config.height}",
             f"W{config.width}",
             f"N{config.num_samples}",
-            f"d{_sanitize_float_for_name(config.density)}",
             f"seed{config.seed}",
         ]
+        if config.density_range is not None:
+            low, high = config.density_range
+            bits.append(f"dr{_sanitize_float_for_name(low)}_{_sanitize_float_for_name(high)}")
+        else:
+            bits.append(f"d{_sanitize_float_for_name(config.density)}")
         if config.stochastic:
             bits.append(f"p{_sanitize_float_for_name(config.p_stochastic)}")
         if config.anomaly_detection:
@@ -301,6 +353,9 @@ def _load_cached_dataset(path: Path) -> DatasetSplits:
     labels_train = data["labels_train"] if "labels_train" in data.files else None
     labels_val = data["labels_val"] if "labels_val" in data.files else None
     labels_test = data["labels_test"] if "labels_test" in data.files else None
+    densities_train = data["densities_train"] if "densities_train" in data.files else None
+    densities_val = data["densities_val"] if "densities_val" in data.files else None
+    densities_test = data["densities_test"] if "densities_test" in data.files else None
 
     return DatasetSplits(
         x_train=x_train,
@@ -312,6 +367,9 @@ def _load_cached_dataset(path: Path) -> DatasetSplits:
         labels_train=labels_train,
         labels_val=labels_val,
         labels_test=labels_test,
+        densities_train=densities_train,
+        densities_val=densities_val,
+        densities_test=densities_test,
     )
 
 
@@ -339,6 +397,12 @@ def _save_cached_dataset(path: Path, splits: DatasetSplits) -> None:
         arrays["labels_val"] = splits.labels_val
     if splits.labels_test is not None:
         arrays["labels_test"] = splits.labels_test
+    if splits.densities_train is not None:
+        arrays["densities_train"] = splits.densities_train
+    if splits.densities_val is not None:
+        arrays["densities_val"] = splits.densities_val
+    if splits.densities_test is not None:
+        arrays["densities_test"] = splits.densities_test
 
     np.savez_compressed(path, **arrays)
 
@@ -426,39 +490,47 @@ def prepare_gol_dataset(config: DataConfig) -> DatasetSplits:
 
     if config.use_cache and path.exists() and not config.overwrite_cache:
         Logger.info("Loading cached dataset from %s", path)
-        return _load_cached_dataset(path)
+        cached = _load_cached_dataset(path)
+        Logger.info(
+            "Cached density means train=%.3f val=%.3f test=%.3f",
+            float(np.mean(cached.densities_train)) if cached.densities_train is not None else float("nan"),
+            float(np.mean(cached.densities_val)) if cached.densities_val is not None else float("nan"),
+            float(np.mean(cached.densities_test)) if cached.densities_test is not None else float("nan"),
+        )
+        return cached
 
     Logger.info("No valid cache at %s, generating new dataset", path)
     np_rng = np.random.default_rng(config.seed)
+    densities = _prepare_density_schedule(config.num_samples, config, np_rng)
 
     # Generate full dataset
     if not config.stochastic:
-        inputs, targets = generate_deterministic_pairs(
+        inputs, targets, densities = generate_deterministic_pairs(
             num_samples=config.num_samples,
             height=config.height,
             width=config.width,
-            density=config.density,
+            densities=densities,
             rng=np_rng,
         )
         labels = None
 
     elif config.stochastic and not config.anomaly_detection:
-        inputs, targets = generate_stochastic_pairs(
+        inputs, targets, densities = generate_stochastic_pairs(
             num_samples=config.num_samples,
             height=config.height,
             width=config.width,
-            density=config.density,
+            densities=densities,
             p=config.p_stochastic,
             rng=np_rng,
         )
         labels = None
 
     else:
-        inputs, targets, labels = generate_anomaly_pairs(
+        inputs, targets, labels, densities = generate_anomaly_pairs(
             num_samples=config.num_samples,
             height=config.height,
             width=config.width,
-            density=config.density,
+            densities=densities,
             p_normal=config.p_stochastic,
             p_anomaly=config.p_anomaly,
             anomaly_fraction=config.anomaly_fraction,
@@ -486,6 +558,9 @@ def prepare_gol_dataset(config: DataConfig) -> DatasetSplits:
     y_val = targets[idx_val]
     x_test = inputs[idx_test]
     y_test = targets[idx_test]
+    densities_train = densities[idx_train]
+    densities_val = densities[idx_val]
+    densities_test = densities[idx_test]
 
     if labels is not None:
         labels_train = labels[idx_train]
@@ -504,6 +579,19 @@ def prepare_gol_dataset(config: DataConfig) -> DatasetSplits:
         labels_train=labels_train,
         labels_val=labels_val,
         labels_test=labels_test,
+        densities_train=densities_train,
+        densities_val=densities_val,
+        densities_test=densities_test,
+    )
+
+    Logger.info(
+        "Prepared dataset splits train=%d val=%d test=%d with density means (%.3f, %.3f, %.3f)",
+        num_train,
+        num_val,
+        num_test,
+        float(densities_train.mean()),
+        float(densities_val.mean()),
+        float(densities_test.mean()),
     )
 
     # Persist to cache

@@ -25,8 +25,12 @@ class DataConfig:
         Fraction of the total data to use for validation. The test
         fraction is computed as 1 - train_fraction - val_fraction.
     density : float
-        Bernoulli parameter for the random initial configurations. A
-        value of 0.5 corresponds to uniformly random 0 or 1 entries.
+        Default Bernoulli parameter for the random initial
+        configurations. Used when ``density_range`` is ``None``.
+    density_range : tuple[float, float] or None
+        Inclusive bounds ``(low, high)`` for sampling the Bernoulli
+        parameter of every snapshot independently. Using a range avoids
+        biasing the model toward a single average density.
     seed : int
         Global random seed used for numpy RNG in data generation and
         splitting.
@@ -72,6 +76,7 @@ class DataConfig:
     val_fraction: float = 0.15
 
     density: float = 0.5
+    density_range: Optional[tuple[float, float]] = (0.2, 0.8)
     seed: int = 0
 
     stochastic: bool = False
@@ -85,6 +90,14 @@ class DataConfig:
     cache_prefix: Optional[str] = None
     use_cache: bool = True
     overwrite_cache: bool = False
+
+    def __post_init__(self) -> None:
+        if self.density_range is not None:
+            low, high = self.density_range
+            if not (0.0 <= low < high <= 1.0):
+                raise ValueError("density_range must satisfy 0 <= low < high <= 1")
+        elif not (0.0 <= self.density <= 1.0):
+            raise ValueError("density must be in [0, 1]")
 
 
 @dataclass
@@ -114,6 +127,15 @@ class DatasetSplits:
         Optional labels for the validation split in anomaly mode.
     labels_test : np.ndarray or None
         Optional labels for the test split in anomaly mode.
+    densities_train : np.ndarray or None
+        Optional per-sample Bernoulli parameters used to generate the
+        training split.
+    densities_val : np.ndarray or None
+        Optional per-sample Bernoulli parameters used to generate the
+        validation split.
+    densities_test : np.ndarray or None
+        Optional per-sample Bernoulli parameters used to generate the
+        test split.
     """
 
     x_train: np.ndarray
@@ -125,3 +147,6 @@ class DatasetSplits:
     labels_train: Optional[np.ndarray] = None
     labels_val: Optional[np.ndarray] = None
     labels_test: Optional[np.ndarray] = None
+    densities_train: Optional[np.ndarray] = None
+    densities_val: Optional[np.ndarray] = None
+    densities_test: Optional[np.ndarray] = None
