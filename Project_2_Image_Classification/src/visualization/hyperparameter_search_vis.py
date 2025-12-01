@@ -98,37 +98,66 @@ class HyperparameterSearchVisualizer:
             plt.close(fig)
         return figure_path
 
-    def save_parameter_effects(self, summary: pd.DataFrame, metric: str) -> dict[str, Path]:
-        """Create scatter/line plots showing how ``metric`` varies with numeric hyper-parameters."""
+    def save_parameter_effects(self, summary: pd.DataFrame, metric: str, *, metric_label: str | None = None) -> Path:
+        """Plot how ``metric`` varies with each numeric hyper-parameter on a single grid."""
 
         numeric_columns = [
             column
             for column in summary.columns
             if column != metric and pd.api.types.is_numeric_dtype(summary[column])
         ]
-        paths: dict[str, Path] = {}
+
+        usable_columns: list[str] = []
+        column_data: list[pd.DataFrame] = []
         for column in numeric_columns:
             data = summary[[column, metric]].dropna()
             if data.empty or data[column].nunique() <= 1:
                 continue
-            data = data.sort_values(column)
-            with scientific_style(self._config.style_config):
-                fig, ax = plt.subplots(figsize=(6, 4))
-                sns.lineplot(data=data, x=column, y=metric, marker="o", ax=ax)
-                best_idx = data[metric].idxmax()
-                best_row = data.loc[best_idx]
-                ax.scatter([best_row[column]], [best_row[metric]], color="red", s=60, label="Best")
-                ax.set_xlabel(column.replace("_", " ").title())
-                ax.set_ylabel(metric.replace("_", " ").title())
-                ax.set_title(f"{metric.replace('_', ' ').title()} vs {column.replace('_', ' ').title()}")
-                place_legend_below(fig, ax)
-                figure_path = self.figures_dir / f"hyperparameter_effect_{column}.png"
-                fig.tight_layout()
-                fig.savefig(figure_path)
-                plt.close(fig)
-            paths[column] = figure_path
+            usable_columns.append(column)
+            column_data.append(data.sort_values(column))
 
-        if not paths:
+        if not usable_columns:
             raise ValueError("No numeric hyper-parameters available to plot effects.")
 
-        return paths
+        n_params = len(usable_columns)
+        ncols = min(3, n_params)
+        nrows = (n_params + ncols - 1) // ncols
+        figsize = (5.0 * ncols, 4.0 * nrows)
+
+        with scientific_style(self._config.style_config):
+            fig, axes = plt.subplots(nrows, ncols, figsize=figsize, squeeze=False, sharey=False)
+            axes_iter = list(axes.flat)
+            legend_ax: plt.Axes | None = None
+
+            for ax, column, data in zip(axes_iter, usable_columns, column_data):
+                line_label = "Metric trend" if legend_ax is None else None
+                sns.lineplot(data=data, x=column, y=metric, marker="o", ax=ax, label=line_label)
+
+                best_idx = data[metric].idxmax()
+                best_row = data.loc[best_idx]
+                scatter_label = "Best" if legend_ax is None else None
+                ax.scatter([best_row[column]], [best_row[metric]], color="red", s=70, label=scatter_label)
+
+                ax.set_xlabel(column.replace("_", " ").title())
+                y_label = metric_label or metric.replace("_", " ").title()
+                ax.set_ylabel(y_label)
+                ax.set_title(f"{y_label} vs {column.replace('_', ' ').title()}")
+
+                if metric.endswith("relative_to_best") or metric.endswith("normalized_vs_best"):
+                    ax.axhline(1.0, color="black", linestyle="--", linewidth=1, alpha=0.6)
+
+                if legend_ax is None:
+                    legend_ax = ax
+
+            for ax in axes_iter[len(usable_columns):]:
+                ax.axis("off")
+
+            if legend_ax is not None:
+                place_legend_below(fig, legend_ax)
+
+            figure_path = self.figures_dir / f"hyperparameter_parameter_effects_{metric}.png"
+            fig.tight_layout()
+            fig.savefig(figure_path, bbox_inches="tight")
+            plt.close(fig)
+
+        return figure_path

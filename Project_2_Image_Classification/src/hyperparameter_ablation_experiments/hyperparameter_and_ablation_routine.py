@@ -73,11 +73,18 @@ class HyperparameterExperimentManager:
         results: list[Dict[str, Any]] = []
 
         self._logger.info(
+            "Running ablations with a fixed %d epoch budget.",
+            ablation_cfg.num_epochs,
+        )
+
+        self._logger.info(
             "Running baseline configuration '%s' for %d repeat(s) before ablations.",
             ablation_cfg.baseline_model,
             ablation_cfg.repeats,
         )
-        baseline_records = self._run_baseline(study_root, ablation_cfg.repeats, metric_name)
+        baseline_records = self._run_baseline(
+            study_root, ablation_cfg.repeats, metric_name, num_epochs=ablation_cfg.num_epochs
+        )
         results.extend(baseline_records)
         parameter_amount = len(ablation_cfg.parameters.items())
 
@@ -94,7 +101,13 @@ class HyperparameterExperimentManager:
                         repeat + 1,
                         overrides,
                     )
-                    trainer_config = self._prepare_trainer_config(run_name, trainer_overrides, study_root, repeat)
+                    trainer_config = self._prepare_trainer_config(
+                        run_name,
+                        trainer_overrides,
+                        study_root,
+                        repeat,
+                        fixed_epochs=ablation_cfg.num_epochs,
+                    )
                     model, resolved_config = self._experiment_model_builder(
                         self._combine_experiment_model_config(model_overrides)
                     )
@@ -127,11 +140,19 @@ class HyperparameterExperimentManager:
         else:
             self._logger.info("Saved ablation delta plot to %s", delta_path)
         try:
-            distribution_paths = visualizer.save_parameter_boxplots(raw_frame, metric_name)
-            for parameter, path in distribution_paths.items():
-                self._logger.info("Saved ablation distribution for %s to %s", parameter, path)
+            normalized_path = visualizer.save_normalized_overview(summary, metric_name)
+        except ValueError as exc:
+            self._logger.debug("Skipping ablation normalized plot: %s", exc)
+        else:
+            self._logger.info("Saved ablation normalized plot to %s", normalized_path)
+        baseline_rows = raw_frame[raw_frame["parameter"] == "baseline"]
+        baseline_value = float(baseline_rows[metric_name].mean()) if not baseline_rows.empty else None
+        try:
+            distribution_path = visualizer.save_parameter_boxplots(raw_frame, metric_name, baseline_value)
         except ValueError as exc:
             self._logger.warning("Could not create ablation distribution plots: %s", exc)
+        else:
+            self._logger.info("Saved ablation distribution grid to %s", distribution_path)
         self._copy_best_checkpoint(raw_frame, metric_name, study_root, prefix="ablation")
         return study_root
 
@@ -143,11 +164,22 @@ class HyperparameterExperimentManager:
         study_root = self._create_study_root(search_cfg.output_subdir)
         records: list[Dict[str, Any]] = []
 
+        self._logger.info(
+            "Running hyper-parameter search with a fixed %d epoch budget.",
+            search_cfg.num_epochs,
+        )
+
         for index, combination in enumerate(search_cfg.iter_grid(), start=1):
             model_overrides, trainer_overrides = self._split_overrides(combination)
             run_name = self._format_combination_name(combination, index)
             self._logger.info("Hyper-parameter run %s", run_name)
-            trainer_config = self._prepare_trainer_config(run_name, trainer_overrides, study_root, repeat_index=0)
+            trainer_config = self._prepare_trainer_config(
+                run_name,
+                trainer_overrides,
+                study_root,
+                repeat_index=0,
+                fixed_epochs=search_cfg.num_epochs,
+            )
             model, resolved_config = self._experiment_model_builder(
                 self._combine_experiment_model_config(model_overrides)
             )
@@ -188,12 +220,20 @@ class HyperparameterExperimentManager:
             self._logger.warning("Skipping hyper-parameter pairplot: %s", exc)
         visualizer.save_top_configurations(enriched, "metric")
         try:
-            effect_paths = visualizer.save_parameter_effects(enriched, "metric")
+            effect_path = visualizer.save_parameter_effects(enriched, "metric")
         except ValueError as exc:
             self._logger.debug("Skipping hyper-parameter effect plots: %s", exc)
         else:
-            for column, path in effect_paths.items():
-                self._logger.info("Saved hyper-parameter effect plot for %s to %s", column, path)
+            self._logger.info("Saved hyper-parameter effect grid to %s", effect_path)
+        if "relative_to_best" in enriched.columns:
+            try:
+                normalized_effect_path = visualizer.save_parameter_effects(
+                    enriched, "relative_to_best", metric_label="Metric / best"
+                )
+            except ValueError:
+                pass
+            else:
+                self._logger.info("Saved normalized hyper-parameter effect grid to %s", normalized_effect_path)
         self._copy_best_checkpoint(enriched, "metric", study_root, prefix="hyperparameter")
         return study_root
 
@@ -232,6 +272,7 @@ class HyperparameterExperimentManager:
             overrides: Mapping[str, Any],
             study_root: Path,
             repeat_index: int,
+            fixed_epochs: int | None = None,
     ) -> TrainerConfig:
         output_dir = study_root / run_name
         optimizer = self._base_trainer_config.optimizer
@@ -271,6 +312,8 @@ class HyperparameterExperimentManager:
         if scheduler_updates:
             scheduler = replace(scheduler, **scheduler_updates)
         config = replace(config, optimizer=optimizer, scheduler=scheduler, seed=seed, output_dir=output_dir)
+        if fixed_epochs is not None:
+            config = replace(config, num_epochs=int(fixed_epochs))
         return config
 
     def _train_model(
@@ -291,13 +334,25 @@ class HyperparameterExperimentManager:
         )
         return result
 
-    def _run_baseline(self, study_root: Path, repeats: int, metric_name: str) -> list[Dict[str, Any]]:
+    def _run_baseline(
+            self,
+            study_root: Path,
+            repeats: int,
+            metric_name: str,
+            num_epochs: int | None = None,
+    ) -> list[Dict[str, Any]]:
         """Train the baseline configuration used for comparisons."""
 
         baseline_records: list[Dict[str, Any]] = []
         for repeat in range(repeats):
             run_name = f"{self._baseline_model_name}_rep{repeat + 1}"
-            trainer_config = self._prepare_trainer_config(run_name, {}, study_root, repeat)
+            trainer_config = self._prepare_trainer_config(
+                run_name,
+                {},
+                study_root,
+                repeat,
+                fixed_epochs=num_epochs,
+            )
             model, resolved_config = self._baseline_model_builder({})
 
             result = self._train_model(
@@ -402,10 +457,13 @@ class HyperparameterExperimentManager:
             aggregated["delta_vs_baseline"] = aggregated[metric_name] - baseline_mean
             denominator = baseline_mean if baseline_mean != 0 else np.nan
             aggregated["relative_change_pct"] = aggregated["delta_vs_baseline"] / denominator * 100.0
+            aggregated["normalized_vs_baseline"] = aggregated[metric_name] / denominator
             frame["delta_vs_baseline"] = frame[metric_name] - baseline_mean
+            frame["normalized_vs_baseline"] = frame[metric_name] / denominator
         else:
             aggregated["delta_vs_baseline"] = np.nan
             aggregated["relative_change_pct"] = np.nan
+            aggregated["normalized_vs_baseline"] = np.nan
 
         return aggregated, frame
 
@@ -441,6 +499,10 @@ class HyperparameterExperimentManager:
             )
 
         if "metric" in enriched.columns:
+            best_metric = enriched["metric"].max()
+            if np.isfinite(best_metric) and best_metric != 0:
+                enriched["relative_to_best"] = enriched["metric"] / best_metric
+                enriched["delta_to_best"] = enriched["metric"] - best_metric
             enriched["metric_rank"] = enriched["metric"].rank(ascending=False, method="min")
 
         return enriched

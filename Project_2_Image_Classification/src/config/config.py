@@ -143,6 +143,7 @@ class AblationStudyConfig:
     baseline_model: str = "baseline"
     repeats: int = 1
     metric: str = "validation_accuracy"
+    num_epochs: int = 20
     output_subdir: str = "ablation"
 
     def iter_runs(self) -> Iterator[Mapping[str, Any]]:
@@ -203,6 +204,7 @@ class HyperparameterSearchConfig:
     )
     evaluation_metric: str = "validation_accuracy"
     max_combinations: int | None = 120
+    num_epochs: int = 20
     output_subdir: str = "hyperparameter_search"
 
     def iter_grid(self) -> Iterator[Mapping[str, Any]]:

@@ -175,6 +175,44 @@ class AblationVisualizer:
 
         return figure_path
 
+    def save_normalized_overview(self, summary: pd.DataFrame, metric: str) -> Path:
+        """Plot the metric normalized against the baseline for easier comparison."""
+
+        if "normalized_vs_baseline" not in summary.columns:
+            raise ValueError("Summary must include a 'normalized_vs_baseline' column.")
+
+        normalized = summary[summary["parameter"] != "baseline"].copy()
+        if normalized.empty:
+            raise ValueError("No ablation entries beyond the baseline configuration were provided.")
+
+        normalized["value"] = normalized["value"].astype(str)
+        figure_path = self.figures_dir / f"ablation_{metric}_normalized.png"
+
+        with scientific_style(self._config.style_config):
+            fig, ax = plt.subplots(
+                figsize=self._auto_figsize(normalized["parameter"].nunique(), normalized["value"].nunique())
+            )
+            sns.barplot(
+                data=normalized,
+                x="parameter",
+                y="normalized_vs_baseline",
+                hue="value",
+                palette="crest",
+                ax=ax,
+            )
+            ax.axhline(1.0, color="black", linewidth=1, linestyle="--", alpha=0.7)
+            ax.set_ylabel(f"{metric.replace('_', ' ')} / baseline")
+            ax.set_xlabel("Hyper-parameter")
+            ax.set_title(f"Normalised {metric.replace('_', ' ')} relative to baseline")
+            if normalized["parameter"].nunique() > 4:
+                self._rotate_xticks(ax)
+            self._place_legend_below(fig, ax, title="Value")
+            fig.tight_layout()
+            fig.savefig(figure_path, dpi=300, bbox_inches="tight")
+            plt.close(fig)
+
+        return figure_path
+
     def save_summary_table(self, summary: pd.DataFrame) -> Path:
         """Persist the ablation results as a CSV file."""
 
@@ -182,35 +220,36 @@ class AblationVisualizer:
         summary.to_csv(path, index=False)
         return path
 
-    def save_parameter_boxplots(self, raw_results: pd.DataFrame, metric: str) -> dict[str, Path]:
-        """Generate boxplots showing the distribution of ``metric`` per parameter value."""
+    def save_parameter_boxplots(self, raw_results: pd.DataFrame, metric: str,
+                                baseline_value: float | None = None) -> Path:
+        """Generate a grid of boxplots showing ``metric`` per parameter value."""
 
         if raw_results.empty:
             raise ValueError("Raw ablation results are required to visualise parameter distributions.")
 
-        paths: dict[str, Path] = {}
-        for parameter, group in raw_results.groupby("parameter"):
-            n_values = group["value"].nunique()
-            figsize = (max(6.5, min(14.0, 2.5 + 0.6 * n_values)), 4.5)
+        parameters = list(raw_results["parameter"].unique())
+        n_params = len(parameters)
+        ncols = min(3, n_params)
+        nrows = (n_params + ncols - 1) // ncols
 
-            with scientific_style(self._config.style_config):
-                fig, ax = plt.subplots(figsize=figsize)
+        figsize = (4.5 * ncols, 4.5 * nrows)
+        with scientific_style(self._config.style_config):
+            fig, axes = plt.subplots(nrows, ncols, figsize=figsize, squeeze=False, sharey=True)
+            axes_iter = list(axes.flat)
+            legend_anchor = None
 
-                plot_group = group.copy()
-                plot_group["value"] = plot_group["value"].astype(str)
+            for ax, parameter in zip(axes_iter, parameters):
+                group = raw_results[raw_results["parameter"] == parameter].copy()
+                if group.empty:
+                    ax.axis("off")
+                    continue
 
-                sns.boxplot(
-                    data=plot_group,
-                    x="value",
-                    y=metric,
-                    ax=ax,
-                    color="#4C72B0",
-                )
+                group["value"] = group["value"].astype(str)
+                sns.boxplot(data=group, x="value", y=metric, ax=ax, color="#4C72B0")
 
-                # only add swarm if not too many points (keeps plot readable)
-                if len(plot_group) <= 300:
+                if len(group) <= 300:
                     sns.swarmplot(
-                        data=plot_group,
+                        data=group,
                         x="value",
                         y=metric,
                         ax=ax,
@@ -218,16 +257,45 @@ class AblationVisualizer:
                         size=4,
                     )
 
+                if baseline_value is not None and baseline_value == baseline_value:  # filter NaN
+                    ax.axhline(baseline_value, color="black", linestyle="--", linewidth=1, alpha=0.6, label="Baseline")
+
+                value_means = group.groupby("value")[metric].mean()
+                if not value_means.empty:
+                    best_value = value_means.idxmax()
+                    best_score = value_means.max()
+                    label = "Best mean" if legend_anchor is None else None
+                    ax.scatter(
+                        [best_value],
+                        [best_score],
+                        color="red",
+                        s=70,
+                        marker="*",
+                        zorder=5,
+                        label=label,
+                    )
+                    if label:
+                        legend_anchor = ax
+
                 ax.set_xlabel("Parameter value")
                 ax.set_ylabel(metric.replace("_", " ").title())
-                ax.set_title(f"Distribution of {metric.replace('_', ' ')} for '{parameter}'")
+                ax.set_title(f"'{parameter}' impact")
 
-                if plot_group["value"].dtype == object or n_values > 5:
+                if group["value"].dtype == object or group["value"].nunique() > 5:
                     self._rotate_xticks(ax, rotation=30)
 
-                fig.tight_layout()
-                figure_path = self.figures_dir / f"ablation_{parameter}_distribution.png"
-                fig.savefig(figure_path)
-                plt.close(fig)
-            paths[str(parameter)] = figure_path
-        return paths
+            # hide any unused axes
+            for ax in axes_iter:
+                if ax.has_data():
+                    continue
+                ax.axis("off")
+
+            if legend_anchor is not None:
+                self._place_legend_below(fig, legend_anchor, title=None)
+
+            figure_path = self.figures_dir / "ablation_parameter_distributions.png"
+            fig.tight_layout()
+            fig.savefig(figure_path, bbox_inches="tight")
+            plt.close(fig)
+
+        return figure_path

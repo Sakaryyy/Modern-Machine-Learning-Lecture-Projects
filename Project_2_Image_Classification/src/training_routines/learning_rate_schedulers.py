@@ -92,7 +92,9 @@ def create_learning_rate_schedule(
         return _with_optional_warmup(cosine, config, total_steps)
 
     if name == "linear_warmup_cosine_decay":
-        decay_steps = max(1, total_steps - config.warmup_steps)
+        decay_steps = abs(max(1, total_steps - config.warmup_steps))
+        if decay_steps - config.warmup_steps < 0:
+            config.warmup_steps = config.warmup_steps // 2
         end_value = config.end_learning_rate if config.end_learning_rate is not None else 0.0
         return optax.warmup_cosine_decay_schedule(
             init_value=config.warmup_init_value,

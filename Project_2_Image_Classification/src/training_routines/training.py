@@ -90,6 +90,10 @@ class TrainerConfig:
     style_config: PlotStyleConfig | None = None
     metrics: Sequence[str] = ("loss", "accuracy")
     augmentation: DataAugmentationConfig = field(default_factory=DataAugmentationConfig)
+    early_stopping_patience: int | None = None
+    early_stopping_min_delta: float = 0.0
+    early_stopping_metric: str = "validation_accuracy"
+    early_stopping_mode: str = "max"
 
     def __post_init__(self) -> None:
         if self.num_epochs <= 0:
@@ -107,6 +111,11 @@ class TrainerConfig:
                 self.augmentation = DataAugmentationConfig(**dict(self.augmentation))
             else:
                 raise TypeError("'augmentation' must be a mapping or DataAugmentationConfig instance.")
+
+        if self.early_stopping_mode not in {"max", "min"}:
+            raise ValueError("'early_stopping_mode' must be either 'max' or 'min'.")
+        if self.early_stopping_patience is not None and self.early_stopping_patience <= 0:
+            raise ValueError("'early_stopping_patience' must be a positive integer when provided.")
 
     @property
     def evaluation_batch_size(self) -> int:
@@ -268,6 +277,9 @@ class Trainer:
         history_records: List[Dict[str, float]] = []
         best_validation_metrics: Dict[str, float] | None = None
         best_validation_score = float("-inf")
+        best_early_stopping_score = float("-inf") if self._config.early_stopping_mode == "max" else float("inf")
+        epochs_without_improvement = 0
+        warned_missing_metric = False
 
         train_step_fn = self._build_train_step()
         eval_step_fn = self._build_eval_step()
@@ -304,6 +316,47 @@ class Trainer:
                     if val_accuracy is not None and val_accuracy > best_validation_score:
                         best_validation_score = val_accuracy
                         best_validation_metrics = dict(validation_metrics)
+
+                    stop_metric_name = self._config.early_stopping_metric
+                    stop_metric_value = record.get(stop_metric_name)
+                    if stop_metric_value is None:
+                        if not warned_missing_metric and self._config.early_stopping_patience is not None:
+                            self._logger.warning(
+                                "Early stopping configured but metric '%s' is unavailable in the record;"
+                                " disabling early stop for this run.",
+                                stop_metric_name,
+                            )
+                            warned_missing_metric = True
+                        stop_metric_value = None
+
+                    if (
+                            stop_metric_value is not None
+                            and self._config.early_stopping_patience is not None
+                            and math.isfinite(float(stop_metric_value))
+                    ):
+                        if self._config.early_stopping_mode == "max":
+                            improved = float(
+                                stop_metric_value) > best_early_stopping_score + self._config.early_stopping_min_delta
+                        else:
+                            improved = float(
+                                stop_metric_value) < best_early_stopping_score - self._config.early_stopping_min_delta
+
+                        if improved:
+                            best_early_stopping_score = float(stop_metric_value)
+                            epochs_without_improvement = 0
+                        else:
+                            epochs_without_improvement += 1
+
+                        if epochs_without_improvement >= self._config.early_stopping_patience:
+                            self._logger.info(
+                                "Early stopping triggered at epoch %d/%d after %d epoch(s) without improvement" \
+                                " on '%s'.",
+                                epoch,
+                                self._config.num_epochs,
+                                epochs_without_improvement,
+                                stop_metric_name,
+                            )
+                            break
                 else:
                     self._logger.warning(
                         "Validation split yielded no metrics; skipping validation logging for this epoch.")
