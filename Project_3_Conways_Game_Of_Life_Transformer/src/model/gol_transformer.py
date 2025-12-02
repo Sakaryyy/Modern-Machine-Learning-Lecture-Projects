@@ -103,11 +103,13 @@ def make_local_attention_mask(
 
 
 class RelativePositionBias(nn.Module):
-    """Learned relative positional bias for self attention.
+    """Learned 2D relative positional bias for self attention.
 
-    This module assigns a learned bias to each pair of positions based
-    on their relative distance in the flattened 1D sequence. The bias is
-    shared across layers and is added to the attention logits.
+    This module assigns a learned bias to each pair of lattice positions
+    based on their shortest periodic offsets in the y and x directions.
+    Bucketing on the 2D offsets keeps the encoding invariant to the
+    flattened sequence width, enabling the same spatial relationships to
+    be reused when evaluating on different lattice sizes.
 
     Attributes
     ----------
@@ -115,50 +117,73 @@ class RelativePositionBias(nn.Module):
         Number of attention heads. A separate bias is learned for each
         head.
     max_distance : int
-        Maximum relative distance treated distinctly. Distances with
-        absolute value larger than this are clipped.
+        Maximum relative offset treated distinctly in each axis. Larger
+        absolute offsets are clipped to this value per axis.
     """
 
     num_heads: int
     max_distance: int
 
+    def _shortest_signed_diff(self, delta: jnp.ndarray, size: int) -> jnp.ndarray:
+        """Return the minimal signed difference on a periodic axis."""
+
+        half = size // 2
+        return (delta + half) % size - half
+
+
     @nn.compact
-    def __call__(self, length: int) -> jnp.ndarray:
-        """Compute the relative positional bias for a sequence.
+    def __call__(self, height: int, width: int) -> jnp.ndarray:
+        """Compute the relative positional bias for a 2D lattice.
 
         Parameters
         ----------
-        length : int
-            Sequence length L.
+        height : int
+            Lattice height.
+        width : int
+            Lattice width.
 
         Returns
         -------
         bias : jnp.ndarray
-            Additive bias of shape (1, num_heads, L, L) that can be
-            added to the attention mask. Entries are real numbers that
-            shift the attention logits before the softmax.
+            Additive bias of shape (1, num_heads, L, L) for
+            L = height * width that can be added to the attention mask.
         """
-        # Relative position indices from i-j
-        pos = jnp.arange(length)
-        rel = pos[:, None] - pos[None, :]  # (L, L)
-        rel = jnp.clip(rel, -self.max_distance, self.max_distance)
+        h = height
+        w = width
+        length = h * w
 
-        # Map to [0, 2*max_distance]
+        ys = jnp.arange(h)
+        xs = jnp.arange(w)
+        yy, xx = jnp.meshgrid(ys, xs, indexing="ij")
+        coords = jnp.stack([yy, xx], axis=-1).reshape(length, 2)  # (L, 2)
+
+        coords_i = coords[:, None, :]  # (L, 1, 2)
+        coords_j = coords[None, :, :]  # (1, L, 2)
+
+        dy = coords_i[..., 0] - coords_j[..., 0]
+        dx = coords_i[..., 1] - coords_j[..., 1]
+
+        dy = self._shortest_signed_diff(dy, h)
+        dx = self._shortest_signed_diff(dx, w)
+
+        dy = jnp.clip(dy, -self.max_distance, self.max_distance)
+        dx = jnp.clip(dx, -self.max_distance, self.max_distance)
+
         offset = self.max_distance
-        rel_bucket = (rel + offset).astype(jnp.int32)
+        dy_bucket = (dy + offset).astype(jnp.int32)  # (L, L)
+        dx_bucket = (dx + offset).astype(jnp.int32)  # (L, L)
 
         num_buckets = 2 * self.max_distance + 1
 
-        # Parameter shape (num_heads, num_buckets)
+        # Parameter shape (num_heads, num_buckets, num_buckets)
         rel_emb = self.param(
             "rel_embedding",
             nn.initializers.zeros,
-            (self.num_heads, num_buckets),
+            (self.num_heads, num_buckets, num_buckets),
         )
 
-        # Look up per head and position pair
-        # rel_bucket: (L, L), rel_emb: (H, B)
-        bias = rel_emb[:, rel_bucket]  # (H, L, L)
+        # Look up per head and position pair using 2D buckets
+        bias = rel_emb[:, dy_bucket, dx_bucket]  # (H, L, L)
         bias = bias[None, :, :, :]  # (1, H, L, L)
         return bias
 
@@ -335,7 +360,7 @@ class GameOfLifeTransformer(nn.Module):
             attn_bias = RelativePositionBias(
                 num_heads=self.config.num_heads,
                 max_distance=self.config.max_relative_distance,
-            )(length)
+            )(height=height, width=width)
 
         for _ in range(self.config.num_layers):
             h = TransformerBlock(

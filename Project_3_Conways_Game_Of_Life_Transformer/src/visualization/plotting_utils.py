@@ -121,13 +121,15 @@ def _imshow_grid(
         cmap: str = "Greys",
         vmin: float = 0.0,
         vmax: float = 1.0,
+        add_colorbar: bool = True,
 ) -> None:
     """Helper to show a single grid image."""
     im = ax.imshow(grid, cmap=cmap, vmin=vmin, vmax=vmax, origin="lower")
     ax.set_xticks([])
     ax.set_yticks([])
     ax.set_title(title)
-    plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    if add_colorbar:
+        plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
 
 
 def plot_grid_pair_examples(
@@ -265,6 +267,213 @@ def plot_grid_difference(
     plt.close(fig)
 
 
+def plot_grid_triplet_array(
+        inputs: np.ndarray,
+        targets: np.ndarray,
+        probs: np.ndarray,
+        title: str,
+        rule_label: str,
+        threshold: float = 0.5,
+        max_examples: int | None = None,
+        include_difference: bool = True,
+        save_path: str | None = None,
+) -> None:
+    """Plot multiple (input, target, prediction) triplets in a single figure.
+
+    Parameters
+    ----------
+    inputs : np.ndarray
+        Array of shape (N, H, W) with input states.
+    targets : np.ndarray
+        Array of shape (N, H, W) with corresponding target states.
+    probs : np.ndarray
+        Array of shape (N, H, W) with predicted probabilities.
+    title : str
+        Title for the full figure.
+    rule_label : str
+        Human-readable description of which rule generated the targets.
+    threshold : float, optional
+        Threshold for converting probabilities to binary predictions when
+        include_difference is True.
+    max_examples : int or None, optional
+        Maximum number of examples to include. If None all are shown.
+    include_difference : bool, optional
+        If True add columns for the binary predictions and error map.
+    save_path : str or None, optional
+        Optional path to save the resulting figure.
+    """
+
+    num_examples = inputs.shape[0] if max_examples is None else min(max_examples, inputs.shape[0])
+    if num_examples == 0:
+        return
+
+    columns = ["Input $x_t$", "Target $x_{t+1}$" + f"({rule_label})", "Predicted $p(x_{t+1}=1|x_t)$"]
+    if include_difference:
+        columns.extend(["Binary prediction", "Errors (TN/FP/FN/TP)"])
+
+    n_cols = len(columns)
+    fig, axes = plt.subplots(num_examples, n_cols, figsize=(3.2 * n_cols, 2.6 * num_examples))
+    axes = np.atleast_2d(axes)
+
+    preds = (probs[:num_examples] > threshold).astype(int)
+    for idx in range(num_examples):
+        _imshow_grid(axes[idx, 0], inputs[idx], title=columns[0], cmap="Greys", vmin=0.0, vmax=1.0, add_colorbar=False)
+        _imshow_grid(
+            axes[idx, 1],
+            targets[idx],
+            title=f"{columns[1]} (sample {idx})",
+            cmap="Greys",
+            vmin=0.0,
+            vmax=1.0,
+            add_colorbar=False,
+        )
+        _imshow_grid(
+            axes[idx, 2],
+            probs[idx],
+            title=columns[2],
+            cmap="viridis",
+            vmin=0.0,
+            vmax=1.0,
+            add_colorbar=False,
+        )
+
+        if include_difference:
+            _imshow_grid(
+                axes[idx, 3],
+                preds[idx],
+                title="Binary prediction",
+                cmap="Greys",
+                vmin=0.0,
+                vmax=1.0,
+                add_colorbar=False,
+            )
+            diff_true = targets[idx].astype(int)
+            diff_pred = preds[idx].astype(int)
+            correct = (diff_true == diff_pred)
+            false_pos = (diff_pred == 1) & (diff_true == 0)
+            false_neg = (diff_pred == 0) & (diff_true == 1)
+            code = np.zeros_like(diff_true, dtype=int)
+            code[false_pos] = 1
+            code[false_neg] = 2
+            code[(diff_true == 1) & correct] = 3
+            cmap = plt.get_cmap("tab10")
+            colors = np.zeros(code.shape + (3,), dtype=float)
+            colors[code == 0] = cmap(0)[:3]
+            colors[code == 1] = cmap(1)[:3]
+            colors[code == 2] = cmap(2)[:3]
+            colors[code == 3] = cmap(3)[:3]
+            axes[idx, 4].imshow(colors, origin="lower")
+            axes[idx, 4].set_xticks([])
+            axes[idx, 4].set_yticks([])
+            axes[idx, 4].set_title(columns[4])
+
+    # Build a single legend for the error codes
+    if include_difference:
+        from matplotlib.patches import Patch
+
+        legend_patches = [
+            Patch(color=plt.get_cmap("tab10")(0), label="True negative"),
+            Patch(color=plt.get_cmap("tab10")(1), label="False positive"),
+            Patch(color=plt.get_cmap("tab10")(2), label="False negative"),
+            Patch(color=plt.get_cmap("tab10")(3), label="True positive"),
+        ]
+        fig.legend(handles=legend_patches, loc="upper right", bbox_to_anchor=(0.98, 0.98), fontsize=8)
+
+    fig.suptitle(f"{title}\nRule: {rule_label}")
+    fig.tight_layout(rect=[0, 0.02, 1, 0.94])
+
+    if save_path is not None:
+        fig.savefig(save_path, bbox_inches="tight")
+
+    plt.close(fig)
+
+
+def plot_confusion_overview(
+        y_true_batch: np.ndarray,
+        y_prob_batch: np.ndarray,
+        rule_label: str,
+        threshold: float = 0.5,
+        save_path: str | None = None,
+        title: str | None = None,
+) -> None:
+    """Summarise confusion statistics over a batch of predictions.
+
+    The plot combines aggregated counts with spatial error frequency maps
+    to highlight where the model tends to make false positives or false
+    negatives.
+    """
+
+    preds = (y_prob_batch > threshold).astype(int)
+    tp = int(((preds == 1) & (y_true_batch == 1)).sum())
+    fp = int(((preds == 1) & (y_true_batch == 0)).sum())
+    tn = int(((preds == 0) & (y_true_batch == 0)).sum())
+    fn = int(((preds == 0) & (y_true_batch == 1)).sum())
+
+    # Frequency maps across the dataset
+    code_maps = []
+    for true, pred in zip(y_true_batch, preds):
+        correct = (true == pred)
+        false_pos = (pred == 1) & (true == 0)
+        false_neg = (pred == 0) & (true == 1)
+        code = np.zeros_like(true, dtype=int)
+        code[false_pos] = 1
+        code[false_neg] = 2
+        code[(true == 1) & correct] = 3
+        code_maps.append(code)
+
+    code_stack = np.stack(code_maps, axis=0)
+    freq_maps = np.array([(code_stack == i).mean(axis=0) for i in range(4)])
+
+    fig, axes = plt.subplots(2, 4, figsize=(16, 6))
+    ax = axes[0, 0]
+    totals = np.array([[tp, fp], [fn, tn]])
+    im = ax.imshow(totals, cmap="Blues", vmin=0)
+    ax.set_xticks([0, 1], labels=["Pred 1", "Pred 0"])
+    ax.set_yticks([0, 1], labels=["True 1", "True 0"])
+    ax.set_title("Confusion counts")
+    for (i, j), val in np.ndenumerate(totals):
+        ax.text(j, i, f"{val}", ha="center", va="center", color="black")
+    plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+
+    ax = axes[0, 1]
+    bars = ax.bar(["TP", "FP", "TN", "FN"], [tp, fp, tn, fn], color=["C3", "C1", "C0", "C2"])
+    ax.bar_label(bars, labels=[f"{v}" for v in [tp, fp, tn, fn]], padding=3)
+    ax.set_ylabel("Count")
+    ax.set_title("Global counts")
+
+    ax = axes[0, 2]
+    total_cells = y_true_batch.size
+    ax.text(0.05, 0.7, f"Rule: {rule_label}")
+    ax.text(0.05, 0.5, f"Threshold: {threshold:.2f}")
+    ax.text(0.05, 0.3, f"Accuracy: {(tp + tn) / total_cells:.3f}")
+    ax.axis("off")
+    ax.set_title("Summary")
+
+    titles = ["True negative frequency", "False positive frequency", "False negative frequency",
+              "True positive frequency"]
+    cmap_rules = plt.get_cmap("magma")
+    for idx, (freq_map, subplot) in enumerate(zip(freq_maps, axes[1])):
+        _imshow_grid(
+            subplot,
+            freq_map,
+            title=titles[idx],
+            cmap=cmap_rules,
+            vmin=0.0,
+            vmax=1.0,
+            add_colorbar=True,
+        )
+
+    axes[0, 3].axis("off")
+
+    fig.suptitle(title or "Prediction quality overview")
+    fig.tight_layout(rect=[0, 0.02, 1, 0.95])
+
+    if save_path is not None:
+        fig.savefig(save_path, bbox_inches="tight")
+
+    plt.close(fig)
+
+
 def plot_score_histograms(
         scores: np.ndarray,
         labels: np.ndarray,
@@ -350,7 +559,7 @@ def plot_roc_curve(
 
 
 def plot_multiple_roc_curves(
-        roc_dict: Dict[str, Tuple[np.ndarray, np.ndarray]],
+        roc_dict: Dict[str, Tuple[np.ndarray, np.ndarray] | Tuple[np.ndarray, np.ndarray, float]],
         title: str = "ROC curves for anomaly detection in stochastic GoL",
         save_path: str = None,
 ) -> None:
@@ -360,7 +569,8 @@ def plot_multiple_roc_curves(
     ----------
     roc_dict : dict
         Mapping from curve labels (str) to pairs (fpr, tpr) where both
-        are one-dimensional arrays of the same length.
+        are one-dimensional arrays of the same length. Optionally a
+        third entry (auc) can be provided to annotate the legend.
     title : str, optional
         Title of the figure.
     save_path : str or None, optional
@@ -368,8 +578,15 @@ def plot_multiple_roc_curves(
     """
     fig, ax = plt.subplots(figsize=(6, 6))
 
-    for label, (fpr, tpr) in roc_dict.items():
-        plot_roc_curve(fpr=fpr, tpr=tpr, label=label, ax=ax)
+    for label, payload in roc_dict.items():
+        if len(payload) == 3:
+            fpr, tpr, auc = payload  # type: ignore[misc]
+            label_text = f"{label} (AUC={auc:.3f})"
+        else:
+            fpr, tpr = payload  # type: ignore[misc]
+            label_text = label
+            auc = None
+        plot_roc_curve(fpr=fpr, tpr=tpr, label=label_text, ax=ax)
 
     # Diagonal baseline
     ax.plot([0, 1], [0, 1], linestyle="--", color="grey", alpha=0.7, label="Random")

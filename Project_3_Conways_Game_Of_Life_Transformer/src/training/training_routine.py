@@ -56,8 +56,10 @@ from Project_3_Conways_Game_Of_Life_Transformer.src.utils.rule_analysis import (
 from Project_3_Conways_Game_Of_Life_Transformer.src.visualization.plotting_utils import (
     plot_calibration_curve,
     plot_grid_difference,
+    plot_confusion_overview,
     plot_grid_pair_examples,
     plot_grid_triplet,
+    plot_grid_triplet_array,
     plot_multiple_roc_curves,
     plot_rule_diagnostics,
     plot_training_curves,
@@ -118,6 +120,19 @@ def _sample_density_schedule(num_samples: int, data_cfg: DataConfig, rng: np.ran
         low, high = data_cfg.density_range
         return rng.uniform(low=low, high=high, size=(num_samples,)).astype(np.float32)
     return np.full((num_samples,), fill_value=float(data_cfg.density), dtype=np.float32)
+
+
+def _describe_rule_setup(data_cfg: DataConfig) -> str:
+    """Return a human-readable description of the rule configuration."""
+
+    if data_cfg.anomaly_detection:
+        return (
+            "Stochastic mix 23/3 vs 35/3 "
+            f"(normal p={data_cfg.p_stochastic:.2f}, anomaly p={data_cfg.p_anomaly:.2f})"
+        )
+    if data_cfg.stochastic:
+        return f"Stochastic mix 23/3 vs 35/3 (p={data_cfg.p_stochastic:.2f})"
+    return "Deterministic Conway 23/3"
 
 
 def _build_learning_rate_schedule(config: TrainingConfig, total_steps: int) -> optax.Schedule:
@@ -649,6 +664,7 @@ def train_and_evaluate(
         LOGGER.info("Test loss=%.4f accuracy=%.4f", test_loss, test_acc)
 
         probs = jax.nn.sigmoid(logits_concat)
+        rule_label = _describe_rule_setup(data_cfg)
         bin_centers, empirical_freq, bin_counts = calibration_curve(probs, splits.y_test)
         calibration_path = diagnostics_dir / "calibration_curve.png"
         plot_calibration_curve(probs, splits.y_test, save_path=calibration_path)
@@ -669,7 +685,7 @@ def train_and_evaluate(
         # Example prediction plots on the test set
         test_example_dir = examples_dir / "test"
         test_example_dir.mkdir(parents=True, exist_ok=True)
-        num_examples = int(min(6, splits.x_test.shape[0]))
+        num_examples = int(min(12, splits.x_test.shape[0]))
         for idx in range(num_examples):
             sample_probs = np.array(probs[idx])
             plot_grid_triplet(
@@ -685,6 +701,26 @@ def train_and_evaluate(
                 save_path=test_example_dir / f"test_prediction_{idx:03d}_difference.png",
             )
 
+        plot_grid_triplet_array(
+            inputs=splits.x_test[:num_examples],
+            targets=splits.y_test[:num_examples],
+            probs=np.array(probs[:num_examples]),
+            title="Test prediction overview",
+            rule_label=rule_label,
+            threshold=0.5,
+            max_examples=num_examples,
+            include_difference=True,
+            save_path=test_example_dir / "test_prediction_overview.png",
+        )
+        plot_confusion_overview(
+            y_true_batch=splits.y_test,
+            y_prob_batch=np.array(probs),
+            rule_label=rule_label,
+            threshold=0.5,
+            save_path=test_example_dir / "test_confusion_overview.png",
+            title="True/false positive and negative summary (test)",
+        )
+
         log_likelihoods = log_likelihood_from_logits(jnp.array(logits_concat), jnp.array(splits.y_test))
         test_nll = float(-log_likelihoods.mean())
         test_brier = compute_brier_score(np.asarray(probs), np.asarray(splits.y_test))
@@ -696,8 +732,8 @@ def train_and_evaluate(
             auc = compute_auc(fpr, tpr)
             LOGGER.info("Anomaly ROC AUC=%.4f", auc)
             roc_path = diagnostics_dir / "roc_curve.png"
-            plot_multiple_roc_curves({f"H{data_cfg.height}W{data_cfg.width}": (fpr, tpr)},
-                                     save_path=roc_path)
+            roc_label = f"H{data_cfg.height}W{data_cfg.width} ({rule_label})"
+            plot_multiple_roc_curves({roc_label: (fpr, tpr, auc)}, save_path=roc_path)
             pd.DataFrame({"threshold": thresholds, "fpr": fpr, "tpr": tpr}).to_csv(
                 diagnostics_dir / "roc_curve.csv", index=False
             )
@@ -737,6 +773,19 @@ def train_and_evaluate(
                     save_path=heldout_dir / f"heldout_prediction_{idx:03d}.png",
                     title=f"Held-out deterministic example {idx}",
                 )
+
+            num_examples = int(min(8, heldout_inputs.shape[0]))
+            plot_grid_triplet_array(
+                inputs=heldout_inputs[:num_examples],
+                targets=heldout_targets[:num_examples],
+                probs=np.array(heldout_probs[:num_examples]),
+                title="Held-out deterministic examples",
+                rule_label=_describe_rule_setup(data_cfg),
+                threshold=0.5,
+                max_examples=num_examples,
+                include_difference=True,
+                save_path=heldout_dir / "heldout_prediction_overview.png",
+            )
 
             heldout_summary = {
                 "loss": heldout_loss,
@@ -795,6 +844,18 @@ def train_and_evaluate(
                     save_path=gen_example_dir / f"generalization_{idx:03d}.png",
                     title=f"Generalisation on {gen_height}x{gen_width} (example {idx})",
                 )
+            num_examples = int(min(9, gen_inputs.shape[0]))
+            plot_grid_triplet_array(
+                inputs=gen_inputs[:num_examples],
+                targets=gen_targets[:num_examples],
+                probs=np.array(gen_probs[:num_examples]),
+                title=f"Generalisation on {gen_height}x{gen_width}",
+                rule_label=_describe_rule_setup(data_cfg),
+                threshold=0.5,
+                max_examples=num_examples,
+                include_difference=True,
+                save_path=gen_example_dir / "generalization_overview.png",
+            )
 
             generalization_rules = analyse_rule_adherence(
                 inputs=gen_inputs,

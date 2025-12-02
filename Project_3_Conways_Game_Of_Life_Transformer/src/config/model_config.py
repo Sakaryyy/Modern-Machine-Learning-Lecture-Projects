@@ -27,11 +27,12 @@ class TransformerConfig:
         If True concatenate normalized 2D coordinates to the raw cell
         state as input features.
     use_relative_position_bias : bool
-        If True add a learned relative positional bias to attention
-        logits based on the 1D token distance within the flattened grid.
+        If True add a learned 2D relative positional bias to attention
+        logits based on the shortest periodic offsets in the lattice.
     max_relative_distance : int
-        Maximum distance for which separate relative bias parameters are
-        learned. Larger distances are clipped to this value.
+        Maximum offset magnitude per axis for which separate relative
+        bias parameters are learned. Larger offsets are clipped to this
+        value.
     """
 
     d_model: int = 64

@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import jax
 
 from Project_3_Conways_Game_Of_Life_Transformer.src.utils.logging import get_logger
