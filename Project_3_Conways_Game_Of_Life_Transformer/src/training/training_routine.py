@@ -2,7 +2,7 @@
 
 import contextlib
 import json
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Callable, Dict, Iterable, Tuple
 
@@ -14,6 +14,7 @@ import optax
 import pandas as pd
 from flax import serialization
 from tqdm.auto import tqdm
+from tqdm.contrib.logging import logging_redirect_tqdm
 
 from Project_3_Conways_Game_Of_Life_Transformer.src.config.data_config import DataConfig
 from Project_3_Conways_Game_Of_Life_Transformer.src.config.model_config import TransformerConfig
@@ -339,7 +340,13 @@ def _evaluate_dataset(
 
     loss_list, acc_list = [], []
     logits_all = []
-    iterator = tqdm(eval_batches, total=int(np.ceil(inputs.shape[0] / batch_size)), desc=desc, leave=False)
+    iterator = tqdm(
+        eval_batches,
+        total=int(np.ceil(inputs.shape[0] / batch_size)),
+        desc=desc,
+        leave=False,
+        dynamic_ncols=True,
+    )
     for batch in iterator:
         metrics = eval_step(state, batch)
         loss_list.append(metrics["loss"])
@@ -463,6 +470,20 @@ def train_and_evaluate(
     """Full training pipeline including plots and artefact saving."""
 
     output_root.mkdir(parents=True, exist_ok=True)
+
+    # Encourage size generalisation by preferring relative positional signals
+    if train_cfg.eval_larger_lattice:
+        if not model_cfg.use_relative_position_bias:
+            LOGGER.warning(
+                "Enabling relative position bias to support lattice-size generalisation."
+            )
+            model_cfg = replace(model_cfg, use_relative_position_bias=True)
+        if model_cfg.use_coord_features:
+            LOGGER.warning(
+                "Disabling absolute coordinate features to avoid overfitting to a fixed grid size."
+            )
+            model_cfg = replace(model_cfg, use_coord_features=False)
+
     _save_configs(output_root, data_cfg, model_cfg, train_cfg)
     set_scientific_plot_style()
 
@@ -483,7 +504,12 @@ def train_and_evaluate(
             splits.x_test.shape,
         )
 
-        example_pairs_path = output_root / "example_pairs.png"
+        diagnostics_dir = output_root / "diagnostics"
+        diagnostics_dir.mkdir(parents=True, exist_ok=True)
+        examples_dir = output_root / "examples"
+        examples_dir.mkdir(parents=True, exist_ok=True)
+
+        example_pairs_path = examples_dir / "train_pairs.png"
         plot_grid_pair_examples(
             inputs=splits.x_train[: min(6, splits.x_train.shape[0])],
             targets=splits.y_train[: min(6, splits.y_train.shape[0])],
@@ -556,16 +582,18 @@ def train_and_evaluate(
             )
             epoch_losses, epoch_accs = [], []
 
-            for batch in tqdm(
-                    batches,
-                    total=steps_per_epoch,
-                    desc=f"Epoch {epoch}/{train_cfg.num_epochs} [train]",
-                    leave=False,
-            ):
-                epoch_key, step_key = jax.random.split(epoch_key)
-                state, metrics = train_step(state, batch, step_key)
-                epoch_losses.append(metrics["loss"])
-                epoch_accs.append(metrics["accuracy"])
+            with logging_redirect_tqdm():
+                for batch in tqdm(
+                        batches,
+                        total=steps_per_epoch,
+                        desc=f"Epoch {epoch}/{train_cfg.num_epochs} [train]",
+                        leave=False,
+                        dynamic_ncols=True,
+                ):
+                    epoch_key, step_key = jax.random.split(epoch_key)
+                    state, metrics = train_step(state, batch, step_key)
+                    epoch_losses.append(metrics["loss"])
+                    epoch_accs.append(metrics["accuracy"])
 
             train_loss = float(jnp.stack(epoch_losses).mean())
             train_acc = float(jnp.stack(epoch_accs).mean())
@@ -609,7 +637,7 @@ def train_and_evaluate(
                 best_checkpoint,
             )
 
-        training_plot_path = output_root / "training_curves.png"
+        training_plot_path = diagnostics_dir / "training_curves.png"
         plot_training_curves(history, title="Training diagnostics", save_path=training_plot_path)
         LOGGER.info("Saved training curves to %s", training_plot_path)
         _record_history(output_root, history)
@@ -621,11 +649,13 @@ def train_and_evaluate(
         LOGGER.info("Test loss=%.4f accuracy=%.4f", test_loss, test_acc)
 
         probs = jax.nn.sigmoid(logits_concat)
-        bin_centers, empirical_freq = calibration_curve(probs, splits.y_test)
-        calibration_path = output_root / "calibration_curve.png"
+        bin_centers, empirical_freq, bin_counts = calibration_curve(probs, splits.y_test)
+        calibration_path = diagnostics_dir / "calibration_curve.png"
         plot_calibration_curve(probs, splits.y_test, save_path=calibration_path)
-        calib_df = pd.DataFrame({"bin_center": bin_centers, "empirical_freq": empirical_freq})
-        calib_df.to_csv(output_root / "calibration_curve.csv", index=False)
+        calib_df = pd.DataFrame(
+            {"bin_center": bin_centers, "empirical_freq": empirical_freq, "bin_count": bin_counts}
+        )
+        calib_df.to_csv(diagnostics_dir / "calibration_curve.csv", index=False)
         LOGGER.info("Saved calibration diagnostics to %s", calibration_path)
 
         rule_summary = analyse_rule_adherence(
@@ -637,21 +667,23 @@ def train_and_evaluate(
         )
 
         # Example prediction plots on the test set
-        example_pred_path = output_root / "test_prediction_triplet.png"
-        example_diff_path = output_root / "test_prediction_difference.png"
-        sample_probs = np.array(probs[0])
-        plot_grid_triplet(
-            splits.x_test[0],
-            splits.y_test[0],
-            sample_probs,
-            save_path=example_pred_path,
-            title="Test prediction example",
-        )
-        plot_grid_difference(
-            splits.y_test[0],
-            (sample_probs > 0.5).astype(int),
-            save_path=example_diff_path,
-        )
+        test_example_dir = examples_dir / "test"
+        test_example_dir.mkdir(parents=True, exist_ok=True)
+        num_examples = int(min(6, splits.x_test.shape[0]))
+        for idx in range(num_examples):
+            sample_probs = np.array(probs[idx])
+            plot_grid_triplet(
+                splits.x_test[idx],
+                splits.y_test[idx],
+                sample_probs,
+                save_path=test_example_dir / f"test_prediction_{idx:03d}.png",
+                title=f"Test prediction example {idx}",
+            )
+            plot_grid_difference(
+                splits.y_test[idx],
+                (sample_probs > 0.5).astype(int),
+                save_path=test_example_dir / f"test_prediction_{idx:03d}_difference.png",
+            )
 
         log_likelihoods = log_likelihood_from_logits(jnp.array(logits_concat), jnp.array(splits.y_test))
         test_nll = float(-log_likelihoods.mean())
@@ -663,20 +695,65 @@ def train_and_evaluate(
             thresholds, fpr, tpr = compute_roc_curve(scores=scores, labels=splits.labels_test)
             auc = compute_auc(fpr, tpr)
             LOGGER.info("Anomaly ROC AUC=%.4f", auc)
-            roc_path = output_root / "roc_curve.png"
+            roc_path = diagnostics_dir / "roc_curve.png"
             plot_multiple_roc_curves({f"H{data_cfg.height}W{data_cfg.width}": (fpr, tpr)},
                                      save_path=roc_path)
             pd.DataFrame({"threshold": thresholds, "fpr": fpr, "tpr": tpr}).to_csv(
-                output_root / "roc_curve.csv", index=False
+                diagnostics_dir / "roc_curve.csv", index=False
             )
             LOGGER.info("Saved ROC curve to %s", roc_path)
             roc_summary = {"auc": auc}
 
+        heldout_summary = None
+        if not data_cfg.stochastic and not data_cfg.anomaly_detection:
+            heldout_rng = np.random.default_rng(seed + 1337)
+            heldout_densities = _sample_density_schedule(
+                train_cfg.num_generalization_samples, data_cfg, heldout_rng
+            )
+            heldout_inputs, heldout_targets, _ = generate_deterministic_pairs(
+                num_samples=train_cfg.num_generalization_samples,
+                height=data_cfg.height,
+                width=data_cfg.width,
+                densities=heldout_densities,
+                rng=heldout_rng,
+            )
+            heldout_loss, heldout_acc, heldout_logits = _evaluate_dataset(
+                state,
+                eval_step,
+                heldout_inputs,
+                heldout_targets,
+                train_cfg.batch_size,
+                desc="Held-out deterministic eval",
+            )
+            heldout_probs = jax.nn.sigmoid(heldout_logits)
+
+            heldout_dir = examples_dir / "heldout"
+            heldout_dir.mkdir(parents=True, exist_ok=True)
+            for idx in range(min(4, heldout_inputs.shape[0])):
+                plot_grid_triplet(
+                    heldout_inputs[idx],
+                    heldout_targets[idx],
+                    np.array(heldout_probs[idx]),
+                    save_path=heldout_dir / f"heldout_prediction_{idx:03d}.png",
+                    title=f"Held-out deterministic example {idx}",
+                )
+
+            heldout_summary = {
+                "loss": heldout_loss,
+                "accuracy": heldout_acc,
+                "density_mean": float(np.mean(heldout_densities)),
+            }
+            LOGGER.info(
+                "Held-out deterministic evaluation: loss=%.4f acc=%.4f",
+                heldout_loss,
+                heldout_acc,
+            )
+
         generalization_summary = None
-        if train_cfg.eval_larger_lattice and not data_cfg.anomaly_detection:
+        if train_cfg.eval_larger_lattice:
             gen_height = train_cfg.larger_height or data_cfg.height * 2
             gen_width = train_cfg.larger_width or data_cfg.width * 2
-            gen_rng = np.random.default_rng(seed + 2024)
+            gen_rng = np.random.default_rng(seed + 61453)
             if train_cfg.generalization_density is not None:
                 densities = np.full(
                     (train_cfg.num_generalization_samples,),
@@ -708,14 +785,16 @@ def train_and_evaluate(
                 state, eval_step, gen_inputs, gen_targets, train_cfg.batch_size
             )
             gen_probs = jax.nn.sigmoid(gen_logits)
-            gen_plot_path = output_root / "generalization_example.png"
-            plot_grid_triplet(
-                gen_inputs[0],
-                gen_targets[0],
-                np.array(gen_probs[0]),
-                save_path=gen_plot_path,
-                title=f"Generalisation on {gen_height}x{gen_width}",
-            )
+            gen_example_dir = examples_dir / "generalization"
+            gen_example_dir.mkdir(parents=True, exist_ok=True)
+            for idx in range(min(3, gen_inputs.shape[0])):
+                plot_grid_triplet(
+                    gen_inputs[idx],
+                    gen_targets[idx],
+                    np.array(gen_probs[idx]),
+                    save_path=gen_example_dir / f"generalization_{idx:03d}.png",
+                    title=f"Generalisation on {gen_height}x{gen_width} (example {idx})",
+                )
 
             generalization_rules = analyse_rule_adherence(
                 inputs=gen_inputs,
@@ -771,6 +850,8 @@ def train_and_evaluate(
         }
         if roc_summary is not None:
             summary_payload.update(roc_summary)
+        if heldout_summary is not None:
+            summary_payload["heldout_deterministic"] = heldout_summary
         if generalization_summary is not None:
             summary_payload["generalization"] = generalization_summary
         metrics_path.write_text(json.dumps(summary_payload, indent=2))
@@ -813,7 +894,9 @@ def generate_predictions(
 
     num_samples = inputs.shape[0]
     outputs = np.empty_like(inputs, dtype=np.float32)
-    for start in tqdm(range(0, num_samples, batch_size), desc="Generating", leave=False):
+    for start in tqdm(
+            range(0, num_samples, batch_size), desc="Generating", leave=False, dynamic_ncols=True
+    ):
         end = min(start + batch_size, num_samples)
         x_batch = jnp.array(inputs[start:end])
         probs = forward_jit(state.params, x_batch)

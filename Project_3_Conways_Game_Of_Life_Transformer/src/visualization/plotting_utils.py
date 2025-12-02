@@ -402,15 +402,16 @@ def plot_calibration_curve(
     save_path : str or None, optional
         Optional file path to save the figure.
     """
-    bin_centers, empirical_freq = calibration_curve(
+    bin_centers, empirical_freq, bin_counts = calibration_curve(
         y_prob=y_prob,
         y_true=y_true,
         num_bins=num_bins,
     )
 
-    fig, ax = plt.subplots(figsize=(4.0, 4.0))
+    mask = ~np.isnan(empirical_freq)
+    fig, ax = plt.subplots(figsize=(5.0, 4.0))
     ax.plot([0, 1], [0, 1], linestyle="--", color="grey", label="perfect")
-    ax.plot(bin_centers, empirical_freq, marker="o", label="model")
+    ax.plot(bin_centers[mask], empirical_freq[mask], marker="o", label="model")
 
     ax.set_xlabel("Predicted probability")
     ax.set_ylabel("Empirical frequency")
@@ -420,11 +421,24 @@ def plot_calibration_curve(
     ax.legend()
     ax.grid(True, alpha=0.3)
 
+    # Visualise how many cells populate each bin
+    ax_hist = ax.twinx()
+    ax_hist.bar(
+        bin_centers,
+        bin_counts / np.maximum(bin_counts.sum(), 1),
+        width=1.0 / num_bins * 0.9,
+        alpha=0.2,
+        color="C1",
+        label="bin mass",
+    )
+    ax_hist.set_ylabel("Fraction of cells per bin")
+    ax_hist.set_ylim(0.0, ax_hist.get_ylim()[1])
+
     fig.tight_layout()
     if save_path is not None:
         fig.savefig(save_path, bbox_inches="tight")
 
-        plt.close(fig)
+    plt.close(fig)
 
 
 def plot_rule_diagnostics(
@@ -443,7 +457,6 @@ def plot_rule_diagnostics(
 
     neighbors = conway_neighbor_counts(x)
     deterministic_next, rule_categories = compute_rule_categories(x, neighbors)
-    y_pred_binary = (y_prob > 0.5).astype(int)
 
     cmap_rules = ListedColormap([
         "#1b9e77",  # survival
@@ -464,7 +477,7 @@ def plot_rule_diagnostics(
     _imshow_grid(axes[0, 2], deterministic_next, title="Deterministic rule output", cmap="Greys", vmin=0, vmax=1)
     _imshow_grid(axes[1, 0], y_true, title="Dataset target", cmap="Greys", vmin=0, vmax=1)
     _imshow_grid(axes[1, 1], y_prob, title="Model $p(x_{t+1}=1)$", cmap="viridis", vmin=0, vmax=1)
-    im = axes[1, 2].imshow(rule_categories, cmap=cmap_rules, origin="lower", vmin=0, vmax=len(RuleCategory) - 1)
+    axes[1, 2].imshow(rule_categories, cmap=cmap_rules, origin="lower", vmin=0, vmax=len(RuleCategory) - 1)
     axes[1, 2].set_xticks([])
     axes[1, 2].set_yticks([])
     axes[1, 2].set_title("Rule category map")

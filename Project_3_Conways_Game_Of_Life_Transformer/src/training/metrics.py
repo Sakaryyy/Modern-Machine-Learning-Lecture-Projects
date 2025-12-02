@@ -171,7 +171,7 @@ def calibration_curve(
         y_prob: np.ndarray,
         y_true: np.ndarray,
         num_bins: int = 10,
-) -> Tuple[np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Compute a reliability curve for binary predictions.
 
     Parameters
@@ -188,7 +188,10 @@ def calibration_curve(
     bin_centers : np.ndarray
         Centers of the probability bins.
     empirical_freq : np.ndarray
-        Empirical frequency of y_true = 1 in each bin.
+        Empirical frequency of y_true = 1 in each bin. Empty bins are
+        filled with NaN.
+    bin_counts : np.ndarray
+        Number of samples that landed in each bin.
     """
     y_prob = np.asarray(y_prob, dtype=float).ravel()
     y_true = np.asarray(y_true, dtype=float).ravel()
@@ -209,4 +212,4 @@ def calibration_curve(
             empirical_freq[b] = np.nan
 
     bin_centers = 0.5 * (bins[:-1] + bins[1:])
-    return bin_centers, empirical_freq
+    return bin_centers, empirical_freq, bin_counts

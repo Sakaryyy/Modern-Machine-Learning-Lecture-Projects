@@ -41,6 +41,6 @@ class TransformerConfig:
     dropout_rate: float = 0.0
     use_local_attention: bool = True
     window_radius: int = 1
-    use_coord_features: bool = True
-    use_relative_position_bias: bool = False
+    use_coord_features: bool = False
+    use_relative_position_bias: bool = True
     max_relative_distance: int = 64
