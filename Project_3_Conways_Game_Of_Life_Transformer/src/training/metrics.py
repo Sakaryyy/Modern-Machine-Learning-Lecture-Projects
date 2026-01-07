@@ -32,6 +32,26 @@ def accuracy_from_logits(
     return correct.mean()
 
 
+def balanced_accuracy_from_logits(
+        logits: jnp.ndarray,
+        targets: jnp.ndarray,
+        eps: float = 1e-6,
+) -> jnp.ndarray:
+    """Compute balanced accuracy across alive/dead classes."""
+    probs = jax.nn.sigmoid(logits)
+    preds = (probs >= 0.5).astype(jnp.int32)
+    targets_int = targets.astype(jnp.int32)
+
+    tp = jnp.sum((preds == 1) & (targets_int == 1))
+    tn = jnp.sum((preds == 0) & (targets_int == 0))
+    fp = jnp.sum((preds == 1) & (targets_int == 0))
+    fn = jnp.sum((preds == 0) & (targets_int == 1))
+
+    tpr = tp / (tp + fn + eps)
+    tnr = tn / (tn + fp + eps)
+    return 0.5 * (tpr + tnr)
+
+
 def negative_log_likelihood_scores(
         log_likelihoods: np.ndarray,
 ) -> np.ndarray:

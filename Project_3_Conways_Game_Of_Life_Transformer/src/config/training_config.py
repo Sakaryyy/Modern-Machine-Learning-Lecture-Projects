@@ -40,6 +40,15 @@ class TrainingConfig:
     l2_reg : float
         Additional L2 regularisation strength applied to all parameters
         in the loss function.
+    rollout_steps : int
+        Number of autoregressive rollout steps used in the training
+        loss. Values > 1 reduce compounding errors by matching multi-step
+        dynamics.
+    balance_loss : bool
+        Whether to use a class-balanced BCE loss to avoid degenerate
+        all-dead predictions.
+    max_pos_weight : float
+        Maximum positive-class weight for balanced BCE.
     eval_larger_lattice : bool
         Whether to automatically evaluate on a larger lattice size
         after training to probe generalisation.
@@ -71,6 +80,9 @@ class TrainingConfig:
     min_lr_ratio: float = 0.05
     max_grad_norm: Optional[float] = 1.0
     l2_reg: float = 0.0
+    rollout_steps: int = 5
+    balance_loss: bool = True
+    max_pos_weight: float = 20.0
     eval_larger_lattice: bool = True
     larger_height: Optional[int] = None
     larger_width: Optional[int] = None

@@ -30,6 +30,31 @@ def binary_cross_entropy_with_logits(
     return loss.mean()
 
 
+def balanced_binary_cross_entropy_with_logits(
+        logits: jnp.ndarray,
+        targets: jnp.ndarray,
+        max_pos_weight: float = 20.0,
+        eps: float = 1e-6,
+) -> jnp.ndarray:
+    """Compute BCE with logits using a per-batch positive class weight.
+
+    The positive class weight is set to (neg / pos), clipped to a
+    maximum value, so that predicting all zeros does not dominate the
+    loss when the grid is sparse.
+    """
+    targets = targets.astype(jnp.float32)
+    pos = targets.sum()
+    total = targets.size
+    neg = total - pos
+    pos_weight = jnp.where(pos > 0, neg / (pos + eps), max_pos_weight)
+    pos_weight = jnp.minimum(pos_weight, max_pos_weight)
+
+    log_exp = jnp.logaddexp(0.0, -jnp.abs(logits))
+    base_loss = jnp.maximum(logits, 0.0) - logits * targets + log_exp
+    weights = targets * pos_weight + (1.0 - targets)
+    return (base_loss * weights).mean()
+
+
 def log_likelihood_from_logits(
         logits: jnp.ndarray,
         targets: jnp.ndarray,

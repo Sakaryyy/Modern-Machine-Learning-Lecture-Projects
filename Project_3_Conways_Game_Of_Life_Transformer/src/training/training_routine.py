@@ -31,10 +31,12 @@ from Project_3_Conways_Game_Of_Life_Transformer.src.model.gol_transformer import
 )
 from Project_3_Conways_Game_Of_Life_Transformer.src.training.loss import (
     binary_cross_entropy_with_logits,
+    balanced_binary_cross_entropy_with_logits,
     log_likelihood_from_logits,
 )
 from Project_3_Conways_Game_Of_Life_Transformer.src.training.metrics import (
     accuracy_from_logits,
+    balanced_accuracy_from_logits,
     calibration_curve,
     compute_auc,
     compute_brier_score,
@@ -71,6 +73,25 @@ from Project_3_Conways_Game_Of_Life_Transformer.src.visualization.plotting_utils
 )
 
 LOGGER = get_logger(__name__)
+
+
+def conway_step_periodic_jax(grid: jnp.ndarray) -> jnp.ndarray:
+    """JAX implementation of the deterministic Conway update."""
+    padded = jnp.pad(grid, ((0, 0), (1, 1), (1, 1)), mode="wrap")
+    neighbor_sum = (
+            padded[:, 0:-2, 0:-2]
+            + padded[:, 0:-2, 1:-1]
+            + padded[:, 0:-2, 2:]
+            + padded[:, 1:-1, 0:-2]
+            + padded[:, 1:-1, 2:]
+            + padded[:, 2:, 0:-2]
+            + padded[:, 2:, 1:-1]
+            + padded[:, 2:, 2:]
+    )
+    alive = grid == 1
+    born = (neighbor_sum == 3) & (~alive)
+    survive = alive & ((neighbor_sum == 2) | (neighbor_sum == 3))
+    return jnp.where(born | survive, 1, 0).astype(jnp.int32)
 
 
 def data_loader(
@@ -242,7 +263,11 @@ def create_train_state(
     return TrainState.create(apply_fn=model.apply, params=params, tx=tx), lr_schedule
 
 
-def make_train_and_eval_step(model: GameOfLifeTransformer, train_cfg: TrainingConfig):
+def make_train_and_eval_step(
+        model: GameOfLifeTransformer,
+        train_cfg: TrainingConfig,
+        data_cfg: DataConfig,
+):
     """Create jitted train and eval step functions for the given model.
 
     This helper closes over `model.apply` to keep the signatures clean.
@@ -286,25 +311,59 @@ def make_train_and_eval_step(model: GameOfLifeTransformer, train_cfg: TrainingCo
         x = jnp.array(batch["x"])
         y = jnp.array(batch["y"])
 
+        rollout_steps = train_cfg.rollout_steps if not data_cfg.stochastic else 1
+
         def loss_fn(params):
-            logits = state.apply_fn(
-                {"params": params},
-                x,
-                train=True,
-                rngs={"dropout": rng},
-            )
-            loss = binary_cross_entropy_with_logits(logits, y)
+            total_loss = 0.0
+            acc_list = []
+            bal_acc_list = []
+            current = x
+            current_true = x
+
+            for step in range(rollout_steps):
+                logits = state.apply_fn(
+                    {"params": params},
+                    current,
+                    train=True,
+                    rngs={"dropout": rng},
+                )
+
+                if data_cfg.stochastic:
+                    targets = y
+                else:
+                    current_true = conway_step_periodic_jax(current_true)
+                    targets = current_true
+
+                if train_cfg.balance_loss:
+                    loss = balanced_binary_cross_entropy_with_logits(
+                        logits,
+                        targets,
+                        max_pos_weight=train_cfg.max_pos_weight,
+                    )
+                else:
+                    loss = binary_cross_entropy_with_logits(logits, targets)
+
+                total_loss = total_loss + loss
+                acc_list.append(accuracy_from_logits(logits, targets))
+                bal_acc_list.append(balanced_accuracy_from_logits(logits, targets))
+
+                preds = (jax.nn.sigmoid(logits) >= 0.5).astype(jnp.int32)
+                current = jax.lax.stop_gradient(preds)
+
+            loss = total_loss / rollout_steps
+            acc = jnp.stack(acc_list).mean()
+            bal_acc = jnp.stack(bal_acc_list).mean()
+
             if train_cfg.l2_reg > 0.0:
                 l2_term = sum(jnp.sum(jnp.square(p)) for p in jtu.tree_leaves(params))
                 param_count = sum(p.size for p in jtu.tree_leaves(params))
                 loss = loss + train_cfg.l2_reg * l2_term / jnp.maximum(param_count, 1)
-            return loss, logits
+            return loss, (acc, bal_acc)
 
         grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
-        (loss, logits), grads = grad_fn(state.params)
+        (loss, (acc, bal_acc)), grads = grad_fn(state.params)
         new_state = state.apply_gradients(grads=grads)
-        acc = accuracy_from_logits(logits, y)
-        return new_state, {"loss": loss, "accuracy": acc}
+        return new_state, {"loss": loss, "accuracy": acc, "balanced_accuracy": bal_acc}
 
     def eval_step(
             state: TrainState,
@@ -327,14 +386,55 @@ def make_train_and_eval_step(model: GameOfLifeTransformer, train_cfg: TrainingCo
         x = jnp.array(batch["x"])
         y = jnp.array(batch["y"])
 
-        logits = state.apply_fn(
-            {"params": state.params},
-            x,
-            train=False,
-        )
-        loss = binary_cross_entropy_with_logits(logits, y)
-        acc = accuracy_from_logits(logits, y)
-        return {"loss": loss, "accuracy": acc, "logits": logits}
+        rollout_steps = train_cfg.rollout_steps if not data_cfg.stochastic else 1
+        total_loss = 0.0
+        acc_list = []
+        bal_acc_list = []
+        current = x
+        current_true = x
+        logits = None
+        first_logits = None
+
+        for _ in range(rollout_steps):
+            logits = state.apply_fn(
+                {"params": state.params},
+                current,
+                train=False,
+            )
+            if first_logits is None:
+                first_logits = logits
+
+            if data_cfg.stochastic:
+                targets = y
+            else:
+                current_true = conway_step_periodic_jax(current_true)
+                targets = current_true
+
+            if train_cfg.balance_loss:
+                loss = balanced_binary_cross_entropy_with_logits(
+                    logits,
+                    targets,
+                    max_pos_weight=train_cfg.max_pos_weight,
+                )
+            else:
+                loss = binary_cross_entropy_with_logits(logits, targets)
+
+            total_loss = total_loss + loss
+            acc_list.append(accuracy_from_logits(logits, targets))
+            bal_acc_list.append(balanced_accuracy_from_logits(logits, targets))
+
+            preds = (jax.nn.sigmoid(logits) >= 0.5).astype(jnp.int32)
+            current = jax.lax.stop_gradient(preds)
+
+        loss = total_loss / rollout_steps
+        acc = jnp.stack(acc_list).mean()
+        bal_acc = jnp.stack(bal_acc_list).mean()
+        return {
+            "loss": loss,
+            "accuracy": acc,
+            "balanced_accuracy": bal_acc,
+            "logits": first_logits,
+        }
 
     return jax.jit(train_step), jax.jit(eval_step)
 
@@ -346,7 +446,7 @@ def _evaluate_dataset(
         targets: np.ndarray,
         batch_size: int,
         desc: str | None = None,
-) -> Tuple[float, float, np.ndarray]:
+) -> Tuple[float, float, float, np.ndarray]:
     """Run evaluation over a dataset and aggregate metrics with progress bars."""
 
     eval_batches = data_loader(
@@ -357,7 +457,7 @@ def _evaluate_dataset(
         shuffle=False,
     )
 
-    loss_list, acc_list = [], []
+    loss_list, acc_list, bal_acc_list = [], [], []
     logits_all = []
     iterator = tqdm(
         eval_batches,
@@ -370,12 +470,14 @@ def _evaluate_dataset(
         metrics = eval_step(state, batch)
         loss_list.append(metrics["loss"])
         acc_list.append(metrics["accuracy"])
+        bal_acc_list.append(metrics["balanced_accuracy"])
         logits_all.append(np.array(metrics["logits"]))
 
     loss_value = float(jnp.stack(loss_list).mean())
     acc_value = float(jnp.stack(acc_list).mean())
+    bal_acc_value = float(jnp.stack(bal_acc_list).mean())
     logits_concat = np.concatenate(logits_all, axis=0)
-    return loss_value, acc_value, logits_concat
+    return loss_value, acc_value, bal_acc_value, logits_concat
 
 
 def _save_checkpoint(output_dir: Path, state: TrainState, epoch: int) -> Path:
@@ -576,7 +678,11 @@ def train_and_evaluate(
         state, lr_schedule = create_train_state(
             key, model, (data_cfg.height, data_cfg.width), train_cfg, steps_per_epoch
         )
-        train_step, eval_step = make_train_and_eval_step(model, train_cfg)
+        if data_cfg.stochastic and train_cfg.rollout_steps > 1:
+            LOGGER.warning(
+                "Stochastic data detected: rollout_steps>1 is ignored because multi-step targets are undefined."
+            )
+        train_step, eval_step = make_train_and_eval_step(model, train_cfg, data_cfg)
 
         num_params = count_parameters(state.params)
         param_mem_mb = estimate_parameter_memory(num_params)
@@ -613,8 +719,10 @@ def train_and_evaluate(
         history = {
             "train_loss": [],
             "train_accuracy": [],
+            "train_balanced_accuracy": [],
             "val_loss": [],
             "val_accuracy": [],
+            "val_balanced_accuracy": [],
             "learning_rate": [],
             "train_val_gap": [],
         }
@@ -632,7 +740,7 @@ def train_and_evaluate(
                 rng=epoch_rng,
                 shuffle=True,
             )
-            epoch_losses, epoch_accs = [], []
+            epoch_losses, epoch_accs, epoch_bal_accs = [], [], []
 
             with logging_redirect_tqdm():
                 for batch in tqdm(
@@ -646,44 +754,48 @@ def train_and_evaluate(
                     state, metrics = train_step(state, batch, step_key)
                     epoch_losses.append(metrics["loss"])
                     epoch_accs.append(metrics["accuracy"])
+                    epoch_bal_accs.append(metrics["balanced_accuracy"])
 
             train_loss = float(jnp.stack(epoch_losses).mean())
             train_acc = float(jnp.stack(epoch_accs).mean())
+            train_bal_acc = float(jnp.stack(epoch_bal_accs).mean())
 
-            val_loss, val_acc, _ = _evaluate_dataset(
+            val_loss, val_acc, val_bal_acc, _ = _evaluate_dataset(
                 state, eval_step, splits.x_val, splits.y_val, train_cfg.batch_size, desc=f"Epoch {epoch} [val]"
             )
             lr_value = float(lr_schedule(int(state.step)))
 
             history["train_loss"].append(train_loss)
             history["train_accuracy"].append(train_acc)
+            history["train_balanced_accuracy"].append(train_bal_acc)
             history["val_loss"].append(val_loss)
             history["val_accuracy"].append(val_acc)
+            history["val_balanced_accuracy"].append(val_bal_acc)
             history["learning_rate"].append(lr_value)
-            history["train_val_gap"].append(train_acc - val_acc)
+            history["train_val_gap"].append(train_bal_acc - val_bal_acc)
 
             LOGGER.info(
                 (
-                    "Epoch %03d train_loss=%.4f train_acc=%.4f val_loss=%.4f "
-                    "val_acc=%.4f lr=%.6f"
+                    "Epoch %03d train_loss=%.4f train_bal_acc=%.4f val_loss=%.4f "
+                    "val_bal_acc=%.4f lr=%.6f"
                 ),
                 epoch,
                 train_loss,
-                train_acc,
+                train_bal_acc,
                 val_loss,
-                val_acc,
+                val_bal_acc,
                 lr_value,
             )
 
             ckpt_path = _save_checkpoint(output_root, state, epoch)
-            if val_acc > best_val_acc:
-                best_val_acc = val_acc
+            if val_bal_acc > best_val_acc:
+                best_val_acc = val_bal_acc
                 best_val_loss = val_loss
                 best_checkpoint = ckpt_path
 
         if best_checkpoint is not None:
             LOGGER.info(
-                "Best validation accuracy=%.4f loss=%.4f saved at %s",
+                "Best validation balanced accuracy=%.4f loss=%.4f saved at %s",
                 best_val_acc,
                 best_val_loss,
                 best_checkpoint,
@@ -695,10 +807,15 @@ def train_and_evaluate(
         _record_history(output_root, history)
 
         # Test evaluation
-        test_loss, test_acc, logits_concat = _evaluate_dataset(
+        test_loss, test_acc, test_bal_acc, logits_concat = _evaluate_dataset(
             state, eval_step, splits.x_test, splits.y_test, train_cfg.batch_size, desc="Testing"
         )
-        LOGGER.info("Test loss=%.4f accuracy=%.4f", test_loss, test_acc)
+        LOGGER.info(
+            "Test loss=%.4f accuracy=%.4f balanced_accuracy=%.4f",
+            test_loss,
+            test_acc,
+            test_bal_acc,
+        )
 
         probs = jax.nn.sigmoid(logits_concat)
         rule_label = _describe_rule_setup(data_cfg)
@@ -804,7 +921,7 @@ def train_and_evaluate(
                 densities=heldout_densities,
                 rng=heldout_rng,
             )
-            heldout_loss, heldout_acc, heldout_logits = _evaluate_dataset(
+            heldout_loss, heldout_acc, heldout_bal_acc, heldout_logits = _evaluate_dataset(
                 state,
                 eval_step,
                 heldout_inputs,
@@ -842,6 +959,7 @@ def train_and_evaluate(
             heldout_summary = {
                 "loss": heldout_loss,
                 "accuracy": heldout_acc,
+                "balanced_accuracy": heldout_bal_acc,
                 "density_mean": float(np.mean(heldout_densities)),
             }
             LOGGER.info(
@@ -882,7 +1000,7 @@ def train_and_evaluate(
                     rng=gen_rng,
                 )
 
-            gen_loss, gen_acc, gen_logits = _evaluate_dataset(
+            gen_loss, gen_acc, gen_bal_acc, gen_logits = _evaluate_dataset(
                 state, eval_step, gen_inputs, gen_targets, train_cfg.batch_size
             )
             gen_probs = jax.nn.sigmoid(gen_logits)
@@ -933,6 +1051,7 @@ def train_and_evaluate(
                 "num_samples": train_cfg.num_generalization_samples,
                 "loss": gen_loss,
                 "accuracy": gen_acc,
+                "balanced_accuracy": gen_bal_acc,
                 "density_mean": float(np.mean(densities)),
                 "rule_adherence": {
                     rule.name.lower(): {
@@ -955,6 +1074,7 @@ def train_and_evaluate(
         summary_payload = {
             "test_loss": test_loss,
             "test_accuracy": test_acc,
+            "test_balanced_accuracy": test_bal_acc,
             "test_brier_score": test_brier,
             "test_negative_log_likelihood": test_nll,
             "density_means": {

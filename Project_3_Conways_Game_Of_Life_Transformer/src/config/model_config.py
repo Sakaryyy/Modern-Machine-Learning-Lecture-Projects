@@ -33,6 +33,10 @@ class TransformerConfig:
         Maximum offset magnitude per axis for which separate relative
         bias parameters are learned. Larger offsets are clipped to this
         value.
+    use_convolutional_attention : bool
+        If True replace dot-product self attention with a local
+        convolutional kernel shared across the lattice, providing a
+        stronger inductive bias for local cellular rules.
     """
 
     d_model: int = 128
@@ -44,4 +48,5 @@ class TransformerConfig:
     window_radius: int = 1
     use_coord_features: bool = False
     use_relative_position_bias: bool = True
+    use_convolutional_attention: bool = True
     max_relative_distance: int = 2

@@ -94,11 +94,17 @@ def plot_training_curves(
         ax.legend()
 
     ax = axes[1]
-    ax.plot(epochs, history["train_accuracy"], label="train")
-    ax.plot(epochs, history["val_accuracy"], label="validation")
+    if "train_balanced_accuracy" in history and "val_balanced_accuracy" in history:
+        ax.plot(epochs, history["train_balanced_accuracy"], label="train (balanced)")
+        ax.plot(epochs, history["val_balanced_accuracy"], label="validation (balanced)")
+        ax.set_ylabel("Balanced accuracy")
+        ax.set_title("Balanced accuracy")
+    else:
+        ax.plot(epochs, history["train_accuracy"], label="train")
+        ax.plot(epochs, history["val_accuracy"], label="validation")
+        ax.set_ylabel("Accuracy")
+        ax.set_title("Accuracy")
     ax.set_xlabel("Epoch")
-    ax.set_ylabel("Accuracy")
-    ax.set_title("Accuracy")
     ax.legend()
 
     fig.suptitle(title, fontsize=12, y=0.98)

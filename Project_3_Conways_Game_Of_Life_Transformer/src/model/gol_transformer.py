@@ -180,6 +180,8 @@ class TransformerBlock(nn.Module):
     num_heads: int
     mlp_dim: int
     dropout_rate: float = 0.0
+    use_convolutional_attention: bool = True
+    window_radius: int = 1
 
     @nn.compact
     def __call__(
@@ -187,6 +189,8 @@ class TransformerBlock(nn.Module):
             x: jnp.ndarray,
             mask: Optional[jnp.ndarray],
             attn_bias: Optional[jnp.ndarray],
+            height: int,
+            width: int,
             train: bool,
     ) -> jnp.ndarray:
         """Apply the transformer block.
@@ -223,14 +227,21 @@ class TransformerBlock(nn.Module):
 
         # Self attention sub layer
         y = nn.LayerNorm()(x)
-        y = nn.SelfAttention(
-            num_heads=self.num_heads,
-            qkv_features=self.d_model,
-            dropout_rate=self.dropout_rate,
-            kernel_init=nn.initializers.xavier_uniform(),
-            bias_init=nn.initializers.zeros,
-            deterministic=not train,
-        )(y, mask=combined_bias)
+        if self.use_convolutional_attention:
+            y = ConvolutionalSelfAttention(
+                d_model=self.d_model,
+                num_heads=self.num_heads,
+                window_radius=self.window_radius,
+            )(y, height=height, width=width)
+        else:
+            y = nn.SelfAttention(
+                num_heads=self.num_heads,
+                qkv_features=self.d_model,
+                dropout_rate=self.dropout_rate,
+                kernel_init=nn.initializers.xavier_uniform(),
+                bias_init=nn.initializers.zeros,
+                deterministic=not train,
+            )(y, mask=combined_bias)
         x = x + y
 
         # Feed forward sub layer
@@ -250,6 +261,56 @@ class TransformerBlock(nn.Module):
         y = nn.Dropout(rate=self.dropout_rate)(y, deterministic=not train)
 
         return x + y
+
+
+class ConvolutionalSelfAttention(nn.Module):
+    """Local convolutional attention with a fixed kernel structure.
+
+    This module replaces dot-product attention with a shared local
+    kernel applied to the value projection, enforcing translation
+    equivariance and a strict local receptive field.
+    """
+
+    d_model: int
+    num_heads: int
+    window_radius: int = 1
+
+    @nn.compact
+    def __call__(self, x: jnp.ndarray, height: int, width: int) -> jnp.ndarray:
+        if self.d_model % self.num_heads != 0:
+            raise ValueError("d_model must be divisible by num_heads for convolutional attention.")
+
+        batch_size, length, _ = x.shape
+        if length != height * width:
+            raise ValueError("Input length does not match height * width.")
+
+        kernel_size = 2 * self.window_radius + 1
+
+        v = nn.Dense(
+            self.d_model,
+            kernel_init=nn.initializers.xavier_uniform(),
+            bias_init=nn.initializers.zeros,
+        )(x)
+        v = v.reshape(batch_size, height, width, self.d_model)
+
+        pad = self.window_radius
+        v_padded = jnp.pad(
+            v,
+            ((0, 0), (pad, pad), (pad, pad), (0, 0)),
+            mode="wrap",
+        )
+
+        v_conv = nn.Conv(
+            features=self.d_model,
+            kernel_size=(kernel_size, kernel_size),
+            feature_group_count=self.num_heads,
+            padding="VALID",
+            use_bias=True,
+            kernel_init=nn.initializers.xavier_uniform(),
+            bias_init=nn.initializers.zeros,
+        )(v_padded)
+
+        return v_conv.reshape(batch_size, length, self.d_model)
 
 
 class GameOfLifeTransformer(nn.Module):
@@ -320,24 +381,27 @@ class GameOfLifeTransformer(nn.Module):
         features = features.reshape(batch_size, length, self.config.d_model)
         # 3. Setup Attention
         use_local = self.config.use_local_attention
-        effective_radius = 1 if use_local else self.config.window_radius
+        local_radius = self.config.window_radius
+
+        use_conv_attn = self.config.use_convolutional_attention
 
         # Bias
-        if self.config.use_relative_position_bias:
+        if self.config.use_relative_position_bias and not use_conv_attn:
+            bias_radius = local_radius if use_local else self.config.max_relative_distance
             attn_bias = RelativePositionBias(
                 num_heads=self.config.num_heads,
-                max_distance=effective_radius,
+                max_distance=bias_radius,
             )(height=height, width=width)
         else:
             attn_bias = None
 
         # Mask
-        if use_local:
+        if use_local and not use_conv_attn:
             dy, dx = get_relative_mesh(height, width)
 
             # Chebyshev distance for mask (square radius)
             dist = jnp.maximum(jnp.abs(dy), jnp.abs(dx))
-            allowed = dist <= effective_radius
+            allowed = dist <= local_radius
 
             # -1e9 is safe for float32 softmax
             mask = jnp.where(allowed, 0.0, -1e9)
@@ -352,7 +416,9 @@ class GameOfLifeTransformer(nn.Module):
                 num_heads=self.config.num_heads,
                 mlp_dim=self.config.mlp_dim,
                 dropout_rate=self.config.dropout_rate,
-            )(h, mask=mask, attn_bias=attn_bias, train=train)
+                use_convolutional_attention=use_conv_attn,
+                window_radius=local_radius,
+            )(h, mask=mask, attn_bias=attn_bias, height=height, width=width, train=train)
 
         logits = nn.Dense(
             1,
