@@ -32,6 +32,7 @@ def default_config_dict() -> Dict[str, Dict[str, Any]]:
     data_defaults["cache_dir"] = "cache"
     if isinstance(data_defaults.get("density_range"), tuple):
         data_defaults["density_range"] = list(data_defaults["density_range"])
+
     model_defaults = asdict(TransformerConfig())
     training_defaults = asdict(TrainingConfig())
     logging_defaults = {"output_dir": "outputs", "log_to_file": True, "filename": "training.log"}
@@ -130,6 +131,8 @@ def build_data_config(section: Dict[str, Any], args: argparse.Namespace) -> Data
 def build_model_config(section: Dict[str, Any], args: argparse.Namespace) -> TransformerConfig:
     """Construct :class:`TransformerConfig` from config file and CLI args."""
 
+    logger = get_logger("main")
+
     cfg = dict(section)
     overrides = {
         "d_model": args.d_model,
@@ -147,6 +150,12 @@ def build_model_config(section: Dict[str, Any], args: argparse.Namespace) -> Tra
         cfg["use_local_attention"] = args.local
     if args.coord_features is not None:
         cfg["use_coord_features"] = args.coord_features
+
+    if cfg.get("use_coord_features", False):
+        logger.warning("WARNING: 'use_coord_features' is True. This will likely break generalization to larger grids.")
+
+    if cfg.get("use_local_attention", True):
+        cfg["max_relative_distance"] = cfg.get("window_radius", 1)
 
     return TransformerConfig(**cfg)
 

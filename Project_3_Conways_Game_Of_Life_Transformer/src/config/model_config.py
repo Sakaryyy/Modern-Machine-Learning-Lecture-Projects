@@ -35,13 +35,13 @@ class TransformerConfig:
         value.
     """
 
-    d_model: int = 64
+    d_model: int = 128
     num_heads: int = 4
-    num_layers: int = 3
-    mlp_dim: int = 128
+    num_layers: int = 6
+    mlp_dim: int = 512
     dropout_rate: float = 0.0
     use_local_attention: bool = True
     window_radius: int = 1
     use_coord_features: bool = False
     use_relative_position_bias: bool = True
-    max_relative_distance: int = 64
+    max_relative_distance: int = 2

@@ -57,8 +57,8 @@ class TrainingConfig:
         reused.
     """
 
-    learning_rate: float = 1e-3
-    num_epochs: int = 20
+    learning_rate: float = 5e-4
+    num_epochs: int = 100
     batch_size: int = 64
     optimizer: str = "adamw"
     weight_decay: float = 1e-4
@@ -66,7 +66,7 @@ class TrainingConfig:
     beta2: float = 0.999
     eps: float = 1e-8
     lr_schedule: str = "cosine"
-    warmup_steps: int = 500
+    warmup_steps: int = 2000
     decay_steps: Optional[int] = None
     min_lr_ratio: float = 0.05
     max_grad_norm: Optional[float] = 1.0
@@ -74,7 +74,7 @@ class TrainingConfig:
     eval_larger_lattice: bool = True
     larger_height: Optional[int] = None
     larger_width: Optional[int] = None
-    num_generalization_samples: int = 128
+    num_generalization_samples: int = 1000
     generalization_density: Optional[float] = None
 
 

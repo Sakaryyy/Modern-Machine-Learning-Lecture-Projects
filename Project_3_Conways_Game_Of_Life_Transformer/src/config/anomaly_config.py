@@ -36,7 +36,7 @@ class AnomalyExperimentConfig:
 
     height: int
     width: int
-    num_train: int = 20000
+    num_train: int = 100000
     num_val: int = 4000
     num_test: int = 5000
     p_train: float = 0.8
@@ -44,5 +44,5 @@ class AnomalyExperimentConfig:
     p_anomaly: float = 0.6
     anomaly_fraction: float = 0.1
     batch_size: int = 64
-    num_epochs: int = 20
-    learning_rate: float = 1e-3
+    num_epochs: int = 100
+    learning_rate: float = 4e-5

@@ -4,10 +4,45 @@ Game of Life transformer.
 
 from typing import Optional
 
+import jax
 import jax.numpy as jnp
 from flax import linen as nn
 
 from Project_3_Conways_Game_Of_Life_Transformer.src.config.model_config import TransformerConfig
+
+
+def get_relative_mesh(height: int, width: int):
+    """Generates the relative difference mesh for a torus grid.
+
+    Returns:
+        dy: (L, L) matrix of relative Y offsets (wrapped)
+        dx: (L, L) matrix of relative X offsets (wrapped)
+    """
+    length = height * width
+    # Use stop_gradient to ensure coordinates are treated as constants
+    ys = jax.lax.stop_gradient(jnp.arange(height))
+    xs = jax.lax.stop_gradient(jnp.arange(width))
+    yy, xx = jnp.meshgrid(ys, xs, indexing="ij")
+
+    # Shape (L, 2)
+    coords = jnp.stack([yy, xx], axis=-1).reshape(length, 2)
+
+    coords_i = coords[:, None, :]  # (L, 1, 2)
+    coords_j = coords[None, :, :]  # (1, L, 2)
+
+    # Raw differences
+    dy_raw = coords_i[..., 0] - coords_j[..., 0]
+    dx_raw = coords_i[..., 1] - coords_j[..., 1]
+
+    # Wrap around for Torus (Shortest signed difference)
+    # (delta + half) % size - half
+    h_half = height // 2
+    w_half = width // 2
+
+    dy = (dy_raw + h_half) % height - h_half
+    dx = (dx_raw + w_half) % width - w_half
+
+    return dy, dx
 
 
 def build_coordinate_features(
@@ -47,61 +82,6 @@ def build_coordinate_features(
     return coords
 
 
-def make_local_attention_mask(
-        height: int,
-        width: int,
-        radius: int,
-) -> jnp.ndarray:
-    """Build a local additive attention mask for a 2D periodic lattice.
-
-    The mask encodes which sites are allowed to attend to which others.
-    Each site is allowed to attend to all sites within a square window
-    of given radius in both directions. Mask entries are 0.0 where
-    attention is allowed and a large negative value where it is masked.
-
-    Periodic boundary conditions are used, so the lattice is treated as
-    a torus.
-
-    Parameters
-    ----------
-    height : int
-        Height of the lattice.
-    width : int
-        Width of the lattice.
-    radius : int
-        Window radius. A radius of 1 corresponds to a 3x3 neighborhood.
-
-    Returns
-    -------
-    mask : jnp.ndarray
-        Attention mask of shape (1, 1, L, L) where L = height * width.
-        Entries are 0.0 for allowed pairs and a large negative value
-        for disallowed pairs.
-    """
-    h = height
-    w = width
-    l = h * w
-
-    ys = jnp.arange(h)
-    xs = jnp.arange(w)
-    yy, xx = jnp.meshgrid(ys, xs, indexing="ij")
-    coords = jnp.stack([yy, xx], axis=-1).reshape(l, 2)  # (L, 2)
-
-    coords_i = coords[:, None, :]
-    coords_j = coords[None, :, :]
-
-    dy = jnp.abs(coords_i[..., 0] - coords_j[..., 0])
-    dx = jnp.abs(coords_i[..., 1] - coords_j[..., 1])
-
-    dy = jnp.minimum(dy, h - dy)
-    dx = jnp.minimum(dx, w - dx)
-
-    allowed = (dy <= radius) & (dx <= radius)
-    mask_2d = jnp.where(allowed, 0.0, -1e9)  # additive bias
-    mask = mask_2d[None, None, :, :]  # (1, 1, L, L)
-    return mask
-
-
 class RelativePositionBias(nn.Module):
     """Learned 2D relative positional bias for self attention.
 
@@ -118,7 +98,9 @@ class RelativePositionBias(nn.Module):
         head.
     max_distance : int
         Maximum relative offset treated distinctly in each axis. Larger
-        absolute offsets are clipped to this value per axis.
+        absolute offsets are clipped to this value per axis. NOTE: max_distance
+        must be small (e.g. 3-5) so that 'far away' on a small grid maps to the
+        same bucket as 'far away' on a larger grid map.
     """
 
     num_heads: int
@@ -148,41 +130,28 @@ class RelativePositionBias(nn.Module):
             Additive bias of shape (1, num_heads, L, L) for
             L = height * width that can be added to the attention mask.
         """
-        h = height
-        w = width
-        length = h * w
+        dy, dx = get_relative_mesh(height, width)
 
-        ys = jnp.arange(h)
-        xs = jnp.arange(w)
-        yy, xx = jnp.meshgrid(ys, xs, indexing="ij")
-        coords = jnp.stack([yy, xx], axis=-1).reshape(length, 2)  # (L, 2)
+        # Clip to max distance.
+        max_dist = int(self.max_distance)
+        dy = jnp.clip(dy, -max_dist, max_dist)
+        dx = jnp.clip(dx, -max_dist, max_dist)
 
-        coords_i = coords[:, None, :]  # (L, 1, 2)
-        coords_j = coords[None, :, :]  # (1, L, 2)
+        # Shift to positive indices for embedding lookup [0, 2*max_dist]
+        offset = max_dist
+        dy_bucket = (dy + offset).astype(jnp.int32)
+        dx_bucket = (dx + offset).astype(jnp.int32)
 
-        dy = coords_i[..., 0] - coords_j[..., 0]
-        dx = coords_i[..., 1] - coords_j[..., 1]
+        num_buckets = 2 * max_dist + 1
 
-        dy = self._shortest_signed_diff(dy, h)
-        dx = self._shortest_signed_diff(dx, w)
-
-        dy = jnp.clip(dy, -self.max_distance, self.max_distance)
-        dx = jnp.clip(dx, -self.max_distance, self.max_distance)
-
-        offset = self.max_distance
-        dy_bucket = (dy + offset).astype(jnp.int32)  # (L, L)
-        dx_bucket = (dx + offset).astype(jnp.int32)  # (L, L)
-
-        num_buckets = 2 * self.max_distance + 1
-
-        # Parameter shape (num_heads, num_buckets, num_buckets)
+        # Initialize to ZEROS
         rel_emb = self.param(
             "rel_embedding",
             nn.initializers.zeros,
             (self.num_heads, num_buckets, num_buckets),
         )
 
-        # Look up per head and position pair using 2D buckets
+        # Look up bias
         bias = rel_emb[:, dy_bucket, dx_bucket]  # (H, L, L)
         bias = bias[None, :, :, :]  # (1, H, L, L)
         return bias
@@ -325,43 +294,58 @@ class GameOfLifeTransformer(nn.Module):
         batch_size, height, width = x.shape
         length = height * width
 
-        # Raw cell state as float feature
-        x_float = x.astype(jnp.float32)[..., None]  # (B, H, W, 1)
+        # Embedding for state vector
+        x_indices = x.astype(jnp.int32)
+        features = nn.Embed(
+            num_embeddings=2,
+            features=self.config.d_model,
+            embedding_init=nn.initializers.normal(stddev=0.02)
+        )(x_indices)  # (B, H, W, D)
 
-        feature_list = [x_float]
 
         if self.config.use_coord_features:
-            coords = build_coordinate_features(height, width)  # (H, W, 2)
+            # Raw cell state as float feature
+            x_float = x.astype(jnp.float32)[..., None]  # (B, H, W, 1)
+
+            ys = jnp.arange(height, dtype=jnp.float32) / max(height - 1, 1)
+            xs = jnp.arange(width, dtype=jnp.float32) / max(width - 1, 1)
+            yy, xx = jnp.meshgrid(ys, xs, indexing="ij")
+            coords = jnp.stack([yy, xx], axis=-1)  # (H, W, 2)
             coords = jnp.broadcast_to(coords, (batch_size, height, width, 2))
-            feature_list.append(coords)
 
-        features = jnp.concatenate(feature_list, axis=-1)  # (B, H, W, C)
-        features = features.reshape(batch_size, length, features.shape[-1])
+            feature_list = [x_float, coords]
+            features_concat = jnp.concatenate(feature_list, axis=-1)
+            features = nn.Dense(self.config.d_model)(features_concat)
 
-        h = nn.Dense(
-            self.config.d_model,
-            kernel_init=nn.initializers.xavier_uniform(),
-            bias_init=nn.initializers.zeros,
-        )(features)
+        features = features.reshape(batch_size, length, self.config.d_model)
+        # 3. Setup Attention
+        use_local = self.config.use_local_attention
+        effective_radius = 1 if use_local else self.config.window_radius
 
-        # Optional local attention mask
-        if self.config.use_local_attention:
-            mask = make_local_attention_mask(
-                height=height,
-                width=width,
-                radius=self.config.window_radius,
-            )
-        else:
-            mask = None
-
-        # Optional relative positional bias
-        attn_bias = None
+        # Bias
         if self.config.use_relative_position_bias:
             attn_bias = RelativePositionBias(
                 num_heads=self.config.num_heads,
-                max_distance=self.config.max_relative_distance,
+                max_distance=effective_radius,
             )(height=height, width=width)
+        else:
+            attn_bias = None
 
+        # Mask
+        if use_local:
+            dy, dx = get_relative_mesh(height, width)
+
+            # Chebyshev distance for mask (square radius)
+            dist = jnp.maximum(jnp.abs(dy), jnp.abs(dx))
+            allowed = dist <= effective_radius
+
+            # -1e9 is safe for float32 softmax
+            mask = jnp.where(allowed, 0.0, -1e9)
+            mask = mask[None, None, :, :]
+        else:
+            mask = None
+
+        h = features
         for _ in range(self.config.num_layers):
             h = TransformerBlock(
                 d_model=self.config.d_model,

@@ -19,6 +19,7 @@ from tqdm.contrib.logging import logging_redirect_tqdm
 from Project_3_Conways_Game_Of_Life_Transformer.src.config.data_config import DataConfig
 from Project_3_Conways_Game_Of_Life_Transformer.src.config.model_config import TransformerConfig
 from Project_3_Conways_Game_Of_Life_Transformer.src.config.training_config import TrainState, TrainingConfig
+from Project_3_Conways_Game_Of_Life_Transformer.src.data_functions.conway_rules import conway_step_periodic
 from Project_3_Conways_Game_Of_Life_Transformer.src.data_functions.data_pipelines import (
     DatasetSplits,
     generate_deterministic_pairs,
@@ -54,6 +55,7 @@ from Project_3_Conways_Game_Of_Life_Transformer.src.utils.rule_analysis import (
     summarise_rule_accuracy,
 )
 from Project_3_Conways_Game_Of_Life_Transformer.src.visualization.plotting_utils import (
+    plot_autoregressive_rollout,
     plot_calibration_curve,
     plot_grid_difference,
     plot_confusion_overview,
@@ -61,7 +63,9 @@ from Project_3_Conways_Game_Of_Life_Transformer.src.visualization.plotting_utils
     plot_grid_triplet,
     plot_grid_triplet_array,
     plot_multiple_roc_curves,
+    plot_performance_by_neighbor_count,
     plot_rule_diagnostics,
+    plot_rule_probability_distributions,
     plot_training_curves,
     set_scientific_plot_style,
 )
@@ -462,6 +466,22 @@ def analyse_rule_adherence(
         title=f"{prefix.capitalize()} rule view",
         save_path=diag_path,
     )
+
+    plot_rule_probability_distributions(
+        inputs=inputs[:5000],  # Subsample for speed if needed
+        probs=probs[:5000],
+        title=f"{prefix.capitalize()} Rule Confidence",
+        save_path=output_dir / f"{prefix}_rule_prob_dist.png"
+    )
+
+    plot_performance_by_neighbor_count(
+        inputs=inputs,
+        targets=targets,
+        probs=probs,
+        title=f"{prefix.capitalize()} Performance by Density",
+        save_path=output_dir / f"{prefix}_neighbor_performance.png"
+    )
+
     LOGGER.info("Saved %s rule diagnostic plot to %s", prefix, diag_path)
     return aggregate
 
@@ -473,6 +493,16 @@ def _record_history(output_dir: Path, history: Dict[str, list]) -> None:
     df.to_csv(csv_path, index=False)
     df.to_excel(xlsx_path, index=False)
     LOGGER.info("Persisted training metrics to %s and %s", csv_path, xlsx_path)
+
+
+def _choose_example_indices(num_available: int, num_requested: int, rng: np.random.Generator) -> np.ndarray:
+    """Select a random subset of indices for visualisation."""
+
+    if num_available == 0 or num_requested <= 0:
+        return np.array([], dtype=int)
+
+    num = int(min(num_available, num_requested))
+    return rng.permutation(num_available)[:num]
 
 
 def train_and_evaluate(
@@ -524,10 +554,17 @@ def train_and_evaluate(
         examples_dir = output_root / "examples"
         examples_dir.mkdir(parents=True, exist_ok=True)
 
+        example_rng = np.random.default_rng(seed + 7481)
+
         example_pairs_path = examples_dir / "train_pairs.png"
+        train_pair_indices = _choose_example_indices(
+            num_available=splits.x_train.shape[0],
+            num_requested=min(6, splits.x_train.shape[0]),
+            rng=example_rng,
+        )
         plot_grid_pair_examples(
-            inputs=splits.x_train[: min(6, splits.x_train.shape[0])],
-            targets=splits.y_train[: min(6, splits.y_train.shape[0])],
+            inputs=splits.x_train[train_pair_indices],
+            targets=splits.y_train[train_pair_indices],
             save_path=example_pairs_path,
             title="Example Conway transitions (train split)",
         )
@@ -702,14 +739,15 @@ def train_and_evaluate(
             )
 
         plot_grid_triplet_array(
-            inputs=splits.x_test[:num_examples],
-            targets=splits.y_test[:num_examples],
-            probs=np.array(probs[:num_examples]),
+            inputs=splits.x_test,
+            targets=splits.y_test,
+            probs=np.array(probs),
             title="Test prediction overview",
             rule_label=rule_label,
             threshold=0.5,
             max_examples=num_examples,
             include_difference=True,
+            rng=example_rng,
             save_path=test_example_dir / "test_prediction_overview.png",
         )
         plot_confusion_overview(
@@ -719,6 +757,19 @@ def train_and_evaluate(
             threshold=0.5,
             save_path=test_example_dir / "test_confusion_overview.png",
             title="True/false positive and negative summary (test)",
+        )
+
+        def model_step_wrapper(x_batch):
+            logits = state.apply_fn({"params": state.params}, x_batch, train=False)
+            return np.array(jax.nn.sigmoid(logits))
+
+        plot_autoregressive_rollout(
+            initial_state=splits.x_test[0],
+            model_step_fn=model_step_wrapper,
+            true_step_fn=conway_step_periodic,
+            steps=8,
+            save_path=diagnostics_dir / "test_rollout.png",
+            title="Autoregressive Stability (Test Set)"
         )
 
         log_likelihoods = log_likelihood_from_logits(jnp.array(logits_concat), jnp.array(splits.y_test))
@@ -776,14 +827,15 @@ def train_and_evaluate(
 
             num_examples = int(min(8, heldout_inputs.shape[0]))
             plot_grid_triplet_array(
-                inputs=heldout_inputs[:num_examples],
-                targets=heldout_targets[:num_examples],
-                probs=np.array(heldout_probs[:num_examples]),
+                inputs=heldout_inputs,
+                targets=heldout_targets,
+                probs=np.array(heldout_probs),
                 title="Held-out deterministic examples",
                 rule_label=_describe_rule_setup(data_cfg),
                 threshold=0.5,
                 max_examples=num_examples,
                 include_difference=True,
+                rng=example_rng,
                 save_path=heldout_dir / "heldout_prediction_overview.png",
             )
 
@@ -846,15 +898,25 @@ def train_and_evaluate(
                 )
             num_examples = int(min(9, gen_inputs.shape[0]))
             plot_grid_triplet_array(
-                inputs=gen_inputs[:num_examples],
-                targets=gen_targets[:num_examples],
-                probs=np.array(gen_probs[:num_examples]),
+                inputs=gen_inputs,
+                targets=gen_targets,
+                probs=np.array(gen_probs),
                 title=f"Generalisation on {gen_height}x{gen_width}",
                 rule_label=_describe_rule_setup(data_cfg),
                 threshold=0.5,
                 max_examples=num_examples,
                 include_difference=True,
+                rng=example_rng,
                 save_path=gen_example_dir / "generalization_overview.png",
+            )
+
+            plot_autoregressive_rollout(
+                initial_state=gen_inputs[0],
+                model_step_fn=model_step_wrapper,
+                true_step_fn=conway_step_periodic,
+                steps=8,
+                save_path=diagnostics_dir / "generalization_rollout.png",
+                title=f"Rollout Stability on {gen_height}x{gen_width}"
             )
 
             generalization_rules = analyse_rule_adherence(
