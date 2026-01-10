@@ -157,10 +157,10 @@ class RelativePositionBias(nn.Module):
         return bias
 
 
-class TransformerBlock(nn.Module):
-    """Single transformer encoder block.
+class NNBlock(nn.Module):
+    """Single encoder block.
 
-    This consists of a self attention sub layer followed by a
+    This consists of an attention or convolution sub layer followed by a
     positionwise MLP, each wrapped with layer normalization and residual
     connections.
 
@@ -169,7 +169,7 @@ class TransformerBlock(nn.Module):
     d_model : int
         Dimensionality of the input and output representations.
     num_heads : int
-        Number of attention heads.
+        Number of heads.
     mlp_dim : int
         Dimensionality of the hidden layer in the MLP.
     dropout_rate : float
@@ -180,7 +180,7 @@ class TransformerBlock(nn.Module):
     num_heads: int
     mlp_dim: int
     dropout_rate: float = 0.0
-    use_convolutional_attention: bool = True
+    use_convolution: bool = True
     window_radius: int = 1
 
     @nn.compact
@@ -193,7 +193,7 @@ class TransformerBlock(nn.Module):
             width: int,
             train: bool,
     ) -> jnp.ndarray:
-        """Apply the transformer block.
+        """Apply the nn block.
 
         Parameters
         ----------
@@ -227,7 +227,7 @@ class TransformerBlock(nn.Module):
 
         # Self attention sub layer
         y = nn.LayerNorm()(x)
-        if self.use_convolutional_attention:
+        if self.use_convolution:
             y = ConvolutionalSelfAttention(
                 d_model=self.d_model,
                 num_heads=self.num_heads,
@@ -264,7 +264,7 @@ class TransformerBlock(nn.Module):
 
 
 class ConvolutionalSelfAttention(nn.Module):
-    """Local convolutional attention with a fixed kernel structure.
+    """Local convolutions with a fixed kernel structure.
 
     This module replaces dot-product attention with a shared local
     kernel applied to the value projection, enforcing translation
@@ -383,7 +383,7 @@ class GameOfLifeTransformer(nn.Module):
         use_local = self.config.use_local_attention
         local_radius = self.config.window_radius
 
-        use_conv_attn = self.config.use_convolutional_attention
+        use_conv_attn = self.config.use_convolution
 
         # Bias
         if self.config.use_relative_position_bias and not use_conv_attn:
@@ -411,12 +411,12 @@ class GameOfLifeTransformer(nn.Module):
 
         h = features
         for _ in range(self.config.num_layers):
-            h = TransformerBlock(
+            h = NNBlock(
                 d_model=self.config.d_model,
                 num_heads=self.config.num_heads,
                 mlp_dim=self.config.mlp_dim,
                 dropout_rate=self.config.dropout_rate,
-                use_convolutional_attention=use_conv_attn,
+                use_convolution=use_conv_attn,
                 window_radius=local_radius,
             )(h, mask=mask, attn_bias=attn_bias, height=height, width=width, train=train)
 
