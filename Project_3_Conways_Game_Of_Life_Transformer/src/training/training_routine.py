@@ -17,7 +17,7 @@ from tqdm.auto import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
 
 from Project_3_Conways_Game_Of_Life_Transformer.src.config.data_config import DataConfig
-from Project_3_Conways_Game_Of_Life_Transformer.src.config.model_config import TransformerConfig
+from Project_3_Conways_Game_Of_Life_Transformer.src.config.model_config import ModelConfig
 from Project_3_Conways_Game_Of_Life_Transformer.src.config.training_config import TrainState, TrainingConfig
 from Project_3_Conways_Game_Of_Life_Transformer.src.data_functions.conway_rules import conway_step_periodic
 from Project_3_Conways_Game_Of_Life_Transformer.src.data_functions.data_pipelines import (
@@ -27,7 +27,7 @@ from Project_3_Conways_Game_Of_Life_Transformer.src.data_functions.data_pipeline
     prepare_gol_dataset,
 )
 from Project_3_Conways_Game_Of_Life_Transformer.src.model.gol_transformer import (
-    GameOfLifeTransformer,
+    GameOfLifeModel,
 )
 from Project_3_Conways_Game_Of_Life_Transformer.src.training.loss import (
     binary_cross_entropy_with_logits,
@@ -229,7 +229,7 @@ def _build_optimizer(config: TrainingConfig, total_steps: int) -> Tuple[
 
 def create_train_state(
         rng: jax.random.PRNGKey,
-        model: GameOfLifeTransformer,
+        model: GameOfLifeModel,
         input_shape: Tuple[int, int, int],
         config: TrainingConfig,
         steps_per_epoch: int,
@@ -240,7 +240,7 @@ def create_train_state(
     ----------
     rng : jax.random.PRNGKey
         JAX random key for parameter initialization and dropout.
-    model : GameOfLifeTransformer
+    model : GameOfLifeModel
         Flax module instance to be trained.
     input_shape : tuple of int
         Shape of a single input batch, excluding the batch dimension.
@@ -264,7 +264,7 @@ def create_train_state(
 
 
 def make_train_and_eval_step(
-        model: GameOfLifeTransformer,
+        model: GameOfLifeModel,
         train_cfg: TrainingConfig,
         data_cfg: DataConfig,
 ):
@@ -274,7 +274,7 @@ def make_train_and_eval_step(
 
     Parameters
     ----------
-    model : GameOfLifeTransformer
+    model : GameOfLifeModel
         Model to be used in the steps.
 
     Returns
@@ -489,7 +489,7 @@ def _save_checkpoint(output_dir: Path, state: TrainState, epoch: int) -> Path:
     return ckpt_path
 
 
-def _save_configs(output_dir: Path, data_cfg: DataConfig, model_cfg: TransformerConfig,
+def _save_configs(output_dir: Path, data_cfg: DataConfig, model_cfg: ModelConfig,
                   train_cfg: TrainingConfig) -> None:
     (output_dir / "configs").mkdir(parents=True, exist_ok=True)
     for name, cfg in {"data": data_cfg, "model": model_cfg, "training": train_cfg}.items():
@@ -509,11 +509,11 @@ def _load_config_from_artifacts(run_dir: Path, name: str, cls):
 
 def load_run_artifact_configs(
         run_dir: Path,
-) -> Tuple[DataConfig | None, TransformerConfig | None, TrainingConfig | None]:
+) -> Tuple[DataConfig | None, ModelConfig | None, TrainingConfig | None]:
     """Load saved configs adjacent to a checkpoint directory when available."""
 
     data_cfg = _load_config_from_artifacts(run_dir, "data", DataConfig)
-    model_cfg = _load_config_from_artifacts(run_dir, "model", TransformerConfig)
+    model_cfg = _load_config_from_artifacts(run_dir, "model", ModelConfig)
     train_cfg = _load_config_from_artifacts(run_dir, "training", TrainingConfig)
     return data_cfg, model_cfg, train_cfg
 
@@ -609,7 +609,7 @@ def _choose_example_indices(num_available: int, num_requested: int, rng: np.rand
 
 def train_and_evaluate(
         data_cfg: DataConfig,
-        model_cfg: TransformerConfig,
+        model_cfg: ModelConfig,
         train_cfg: TrainingConfig,
         output_root: Path,
         seed: int = 0,
@@ -672,7 +672,7 @@ def train_and_evaluate(
         )
         LOGGER.info("Saved example grid transitions to %s", example_pairs_path)
 
-        model = GameOfLifeTransformer(config=model_cfg)
+        model = GameOfLifeModel(config=model_cfg)
         key = jax.random.PRNGKey(seed)
         steps_per_epoch = max(1, int(np.ceil(splits.x_train.shape[0] / train_cfg.batch_size)))
         state, lr_schedule = create_train_state(
@@ -1103,7 +1103,7 @@ def train_and_evaluate(
     return state, splits, output_root
 
 
-def load_params(checkpoint_path: Path, model: GameOfLifeTransformer, input_shape: Tuple[int, int]) -> TrainState:
+def load_params(checkpoint_path: Path, model: GameOfLifeModel, input_shape: Tuple[int, int]) -> TrainState:
     """Load a saved parameter file into a fresh TrainState."""
 
     rng = jax.random.PRNGKey(0)
@@ -1115,18 +1115,18 @@ def load_params(checkpoint_path: Path, model: GameOfLifeTransformer, input_shape
 
 def generate_predictions(
         checkpoint_path: Path,
-        model_cfg: TransformerConfig | None,
+        model_cfg: ModelConfig | None,
         inputs: np.ndarray,
         batch_size: int,
 ) -> np.ndarray:
     """Run a trained model in generation/evaluation mode."""
 
     run_dir = checkpoint_path.parent.parent
-    saved_cfg = _load_config_from_artifacts(run_dir, "model", TransformerConfig)
-    active_cfg = saved_cfg or model_cfg or TransformerConfig()
+    saved_cfg = _load_config_from_artifacts(run_dir, "model", ModelConfig)
+    active_cfg = saved_cfg or model_cfg or ModelConfig()
     LOGGER.info("Using model configuration: %s", active_cfg)
 
-    model = GameOfLifeTransformer(config=active_cfg)
+    model = GameOfLifeModel(config=active_cfg)
     state = load_params(checkpoint_path, model, (inputs.shape[1], inputs.shape[2]))
 
     def forward(params, x_batch):

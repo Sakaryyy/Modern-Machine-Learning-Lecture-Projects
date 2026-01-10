@@ -1,5 +1,5 @@
 """
-Game of Life transformer.
+Game of Life Model.
 """
 
 from typing import Optional
@@ -8,7 +8,7 @@ import jax
 import jax.numpy as jnp
 from flax import linen as nn
 
-from Project_3_Conways_Game_Of_Life_Transformer.src.config.model_config import TransformerConfig
+from Project_3_Conways_Game_Of_Life_Transformer.src.config.model_config import ModelConfig
 
 
 def get_relative_mesh(height: int, width: int):
@@ -228,7 +228,7 @@ class NNBlock(nn.Module):
         # Self attention sub layer
         y = nn.LayerNorm()(x)
         if self.use_convolution:
-            y = ConvolutionalSelfAttention(
+            y = ConvolutionModel(
                 d_model=self.d_model,
                 num_heads=self.num_heads,
                 window_radius=self.window_radius,
@@ -263,12 +263,8 @@ class NNBlock(nn.Module):
         return x + y
 
 
-class ConvolutionalSelfAttention(nn.Module):
+class ConvolutionModel(nn.Module):
     """Local convolutions with a fixed kernel structure.
-
-    This module replaces dot-product attention with a shared local
-    kernel applied to the value projection, enforcing translation
-    equivariance and a strict local receptive field.
     """
 
     d_model: int
@@ -313,21 +309,20 @@ class ConvolutionalSelfAttention(nn.Module):
         return v_conv.reshape(batch_size, length, self.d_model)
 
 
-class GameOfLifeTransformer(nn.Module):
-    """Transformer model that predicts the next Game of Life state.
+class GameOfLifeModel(nn.Module):
+    """Model that predicts the next Game of Life state.
 
     This model takes a batch of Game of Life grids of shape
     (batch, height, width) with binary entries and predicts per cell
-    logits for the next time step. It uses a stack of transformer
-    encoder blocks with optional local self attention on a 2D lattice.
+    logits for the next time step.
 
     Attributes
     ----------
-    config : TransformerConfig
-        Configuration for the transformer stack.
+    config : ModelConfig
+        Configuration for the Model stack.
     """
 
-    config: TransformerConfig
+    config: ModelConfig
 
     @nn.compact
     def __call__(
@@ -335,7 +330,7 @@ class GameOfLifeTransformer(nn.Module):
             x: jnp.ndarray,
             train: bool,
     ) -> jnp.ndarray:
-        """Apply the Game of Life transformer.
+        """Apply the Game of Life Model.
 
         Parameters
         ----------

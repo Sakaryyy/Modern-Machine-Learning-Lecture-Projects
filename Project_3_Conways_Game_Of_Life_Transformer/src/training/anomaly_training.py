@@ -9,14 +9,14 @@ import numpy as np
 
 from Project_3_Conways_Game_Of_Life_Transformer.src.config.anomaly_config import AnomalyExperimentConfig
 from Project_3_Conways_Game_Of_Life_Transformer.src.config.data_config import DataConfig
-from Project_3_Conways_Game_Of_Life_Transformer.src.config.model_config import TransformerConfig
+from Project_3_Conways_Game_Of_Life_Transformer.src.config.model_config import ModelConfig
 from Project_3_Conways_Game_Of_Life_Transformer.src.config.training_config import TrainingConfig
 from Project_3_Conways_Game_Of_Life_Transformer.src.training.training_routine import train_and_evaluate
 from Project_3_Conways_Game_Of_Life_Transformer.src.visualization.plotting_utils import plot_multiple_roc_curves
 
 
 def run_anomaly_experiment_for_size(
-        model_config: TransformerConfig,
+        model_config: ModelConfig,
         exp_config: AnomalyExperimentConfig,
         output_root: Path,
         seed: int = 0,
@@ -63,7 +63,7 @@ def run_all_anomaly_experiments(output_root: Path) -> None:
     """Execute anomaly experiments for the canonical three grid sizes."""
     # Shared model configuration; you can tune this further
 
-    model_cfg = TransformerConfig()
+    model_cfg = ModelConfig()
 
     sizes = [(16, 16), (32, 32), (64, 64)]
 

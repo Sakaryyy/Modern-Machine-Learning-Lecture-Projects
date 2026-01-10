@@ -2,7 +2,7 @@ from dataclasses import dataclass
 
 
 @dataclass
-class TransformerConfig:
+class ModelConfig:
     """Configuration container for the Game of Life transformer.
 
     Attributes
@@ -10,13 +10,13 @@ class TransformerConfig:
     d_model : int
         Dimensionality of the token embeddings and hidden representations.
     num_heads : int
-        Number of attention heads in each self attention layer.
+        Number of heads in each layer.
     num_layers : int
-        Number of transformer blocks to stack.
+        Number of  blocks to stack.
     mlp_dim : int
         Dimensionality of the hidden layer in the MLP sub block.
     dropout_rate : float
-        Dropout rate used in attention and MLP.
+        Dropout rate.
     use_local_attention : bool
         If True restrict attention to a local window around each cell.
         If False use full global self attention.
@@ -35,8 +35,7 @@ class TransformerConfig:
         value.
     use_convolution : bool
         If True replace dot-product self attention with a local
-        convolutional kernel shared across the lattice, providing a
-        stronger inductive bias for local cellular rules.
+        convolutional kernel shared across the lattice.
     """
 
     d_model: int = 128

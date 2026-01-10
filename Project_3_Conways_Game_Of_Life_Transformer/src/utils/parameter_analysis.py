@@ -7,7 +7,7 @@ from typing import Tuple
 import jax
 import numpy as np
 
-from Project_3_Conways_Game_Of_Life_Transformer.src.config.model_config import TransformerConfig
+from Project_3_Conways_Game_Of_Life_Transformer.src.config.model_config import ModelConfig
 
 
 def count_parameters(params) -> int:
@@ -53,7 +53,7 @@ def estimate_attention_activation_memory(
         batch_size: int,
         height: int,
         width: int,
-        config: TransformerConfig,
+        config: ModelConfig,
         bytes_per_float: int = 4,
 ) -> Tuple[float, float]:
     """Estimate memory usage for attention activations per forward pass.
@@ -71,7 +71,7 @@ def estimate_attention_activation_memory(
         Lattice height.
     width : int
         Lattice width.
-    config : TransformerConfig
+    config : ModelConfig
         Transformer configuration, used for d_model, num_heads, number
         of layers, and local attention settings.
     bytes_per_float : int, optional
@@ -114,7 +114,7 @@ def estimate_attention_flops(
         batch_size: int,
         height: int,
         width: int,
-        config: TransformerConfig,
+        config: ModelConfig,
 ) -> float:
     """Estimate the number of floating point operations per forward pass.
 
@@ -131,7 +131,7 @@ def estimate_attention_flops(
         Lattice height.
     width : int
         Lattice width.
-    config : TransformerConfig
+    config : ModelConfig
         Transformer configuration.
 
     Returns

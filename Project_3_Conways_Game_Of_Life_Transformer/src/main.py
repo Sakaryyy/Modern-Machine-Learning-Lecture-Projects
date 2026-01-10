@@ -11,7 +11,7 @@ import numpy as np
 import yaml
 
 from Project_3_Conways_Game_Of_Life_Transformer.src.config.data_config import DataConfig
-from Project_3_Conways_Game_Of_Life_Transformer.src.config.model_config import TransformerConfig
+from Project_3_Conways_Game_Of_Life_Transformer.src.config.model_config import ModelConfig
 from Project_3_Conways_Game_Of_Life_Transformer.src.config.training_config import TrainingConfig
 from Project_3_Conways_Game_Of_Life_Transformer.src.data_functions.data_pipelines import sample_random_grid
 from Project_3_Conways_Game_Of_Life_Transformer.src.training.training_routine import (
@@ -33,7 +33,7 @@ def default_config_dict() -> Dict[str, Dict[str, Any]]:
     if isinstance(data_defaults.get("density_range"), tuple):
         data_defaults["density_range"] = list(data_defaults["density_range"])
 
-    model_defaults = asdict(TransformerConfig())
+    model_defaults = asdict(ModelConfig())
     training_defaults = asdict(TrainingConfig())
     logging_defaults = {"output_dir": "outputs", "log_to_file": True, "filename": "training.log"}
     return {
@@ -128,7 +128,7 @@ def build_data_config(section: Dict[str, Any], args: argparse.Namespace) -> Data
     return DataConfig(**cfg)
 
 
-def build_model_config(section: Dict[str, Any], args: argparse.Namespace) -> TransformerConfig:
+def build_model_config(section: Dict[str, Any], args: argparse.Namespace) -> ModelConfig:
     """Construct :class:`TransformerConfig` from config file and CLI args."""
 
     logger = get_logger("main")
@@ -157,7 +157,7 @@ def build_model_config(section: Dict[str, Any], args: argparse.Namespace) -> Tra
     if cfg.get("use_local_attention", True):
         cfg["max_relative_distance"] = cfg.get("window_radius", 1)
 
-    return TransformerConfig(**cfg)
+    return ModelConfig(**cfg)
 
 
 def build_training_config(section: Dict[str, Any], args: argparse.Namespace) -> TrainingConfig:
@@ -194,7 +194,7 @@ def parse_args() -> argparse.Namespace:
 
     parser = argparse.ArgumentParser(
         description=(
-            "Train or evaluate the Conway Game of Life transformer. Values are "
+            "Train or evaluate the Conway Game of Life Model. Values are "
             "loaded from config.yaml when available and can be overridden via CLI."
         )
     )
@@ -207,7 +207,7 @@ def parse_args() -> argparse.Namespace:
     subparsers = parser.add_subparsers(dest="mode", required=True)
 
     # Training mode
-    train_parser = subparsers.add_parser("train", help="Train a transformer model")
+    train_parser = subparsers.add_parser("train", help="Train a Game of Life model")
     train_parser.add_argument("--height", type=int, help="Grid height; overrides config file")
     train_parser.add_argument("--width", type=int, help="Grid width; overrides config file")
     train_parser.add_argument("--num-samples", type=int, help="Number of snapshot pairs to generate")
@@ -264,7 +264,7 @@ def parse_args() -> argparse.Namespace:
     train_parser.add_argument("--l2-reg", type=float, help="L2 regularisation weight added to the loss")
     train_parser.add_argument("--d-model", type=int, help="Transformer hidden dimension")
     train_parser.add_argument("--num-heads", type=int, help="Number of attention heads")
-    train_parser.add_argument("--num-layers", type=int, help="Number of transformer blocks")
+    train_parser.add_argument("--num-layers", type=int, help="Number of Model blocks")
     train_parser.add_argument("--mlp-dim", type=int, help="Hidden dimension in the feedforward sub-layer")
     train_parser.add_argument("--dropout", type=float, help="Dropout rate")
     train_parser.add_argument(
@@ -390,7 +390,7 @@ def run_generation(args: argparse.Namespace, config_data: Dict[str, Dict[str, An
     density = args.density if args.density is not None else float(data_section.get("density", 0.5))
     seed = args.seed if args.seed is not None else int(data_section.get("seed", 0))
 
-    model_cfg = saved_model_cfg or TransformerConfig()
+    model_cfg = saved_model_cfg or ModelConfig()
     rng = np.random.default_rng(seed)
     densities = (
         rng.uniform(low=density_range[0], high=density_range[1], size=args.num_samples)
