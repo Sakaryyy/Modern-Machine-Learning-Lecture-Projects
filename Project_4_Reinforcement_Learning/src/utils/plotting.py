@@ -158,6 +158,42 @@ class RLPlotter:
             x_column="episode",
         )
 
+    def plot_hyperparameter_sweep(self, frame: pd.DataFrame, output_dir: Path) -> None:
+        """Plot sensitivity curves for hyperparameter sweeps.
+
+        Parameters
+        ----------
+        frame:
+            Long-format dataframe containing ``hyperparameter``, ``value``, and
+            ``mean_reward`` columns.
+        output_dir:
+            Directory where plots should be saved.
+        """
+
+        if frame.empty:
+            return
+
+        self.apply_style()
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        for hyperparameter in frame["hyperparameter"].unique():
+            subset = frame[frame["hyperparameter"] == hyperparameter]
+            fig, ax = plt.subplots(figsize=(6, 4))
+            sns.lineplot(
+                data=subset,
+                x="value",
+                y="mean_reward",
+                marker="o",
+                ax=ax,
+            )
+            ax.set_title(f"Hyperparameter Sensitivity: {hyperparameter}")
+            ax.set_xlabel(hyperparameter)
+            ax.set_ylabel("Mean evaluation reward")
+            ax.grid(False)
+            fig.tight_layout()
+            fig.savefig(output_dir / f"sweep_{hyperparameter}.png", bbox_inches="tight")
+            plt.close(fig)
+
     def _default_specs(self) -> Sequence[PlotSpec]:
         """Return the default plotting specifications."""
 

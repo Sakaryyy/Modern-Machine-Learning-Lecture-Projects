@@ -38,6 +38,18 @@ python -m Project_4_Reinforcement_Learning.src.main --mode baseline --steps 24
 python -m Project_4_Reinforcement_Learning.src.main --mode diagnostics --steps 24 --interactive
 ```
 
+### Run PPO training with a hyperparameter sweep
+
+```bash
+python -m Project_4_Reinforcement_Learning.src.main --mode train --total-timesteps 40000 --n-envs 4 --eval-episodes 12
+```
+
+Optionally provide a JSON grid file with hyperparameter values:
+
+```bash
+python -m Project_4_Reinforcement_Learning.src.main --mode train --grid-json hyperparameter_grid.json
+```
+
 ## Environment Summary
 
 The environment models:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 from Project_4_Reinforcement_Learning.src.config.env_config import EnvironmentConfig
@@ -14,6 +15,11 @@ from Project_4_Reinforcement_Learning.src.logger import (
     get_logger
 )
 from Project_4_Reinforcement_Learning.src.policies.baseline_policy import BaselinePolicy
+from Project_4_Reinforcement_Learning.src.training import (
+    AgentTrainingConfig,
+    HyperparameterSearchConfig,
+    run_training_sweep,
+)
 from Project_4_Reinforcement_Learning.src.utils import (
     EpisodeRecorder,
     RLPlotter,
@@ -109,7 +115,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Reinforcement learning project utilities.")
     parser.add_argument(
         "--mode",
-        choices=["baseline", "diagnostics"],
+        choices=["baseline", "diagnostics", "train"],
         default="baseline",
         help="Execution mode.",
     )
@@ -132,6 +138,42 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Pause after each step in diagnostics mode.",
     )
+    parser.add_argument(
+        "--total-timesteps",
+        type=int,
+        default=40_000,
+        help="Total training timesteps for RL mode.",
+    )
+    parser.add_argument(
+        "--n-envs",
+        type=int,
+        default=4,
+        help="Number of parallel environments for RL training.",
+    )
+    parser.add_argument(
+        "--eval-episodes",
+        type=int,
+        default=12,
+        help="Evaluation episodes for each configuration.",
+    )
+    parser.add_argument(
+        "--algorithm",
+        type=str,
+        default="PPO",
+        help="Stable Baselines3 algorithm identifier.",
+    )
+    parser.add_argument(
+        "--grid-json",
+        type=Path,
+        default=None,
+        help="Optional JSON file describing the hyperparameter grid.",
+    )
+    parser.add_argument(
+        "--max-configs",
+        type=int,
+        default=None,
+        help="Optional cap on the number of hyperparameter configurations.",
+    )
     return parser.parse_args()
 
 
@@ -147,12 +189,31 @@ def main() -> None:
 
     if args.mode == "baseline":
         _simulate_baseline(steps=args.steps, seed=args.seed, output_dir=args.output_dir, run_name=args.run_name)
-    else:
+    elif args.mode == "diagnostics":
         run_interactive_diagnostics(
             config=EnvironmentConfig(),
             num_steps=args.steps,
             interactive=args.interactive,
             seed=args.seed,
+        )
+    else:
+        grid = None
+        if args.grid_json is not None:
+            grid = json.loads(args.grid_json.read_text(encoding="utf-8"))
+
+        training_config = AgentTrainingConfig(
+            total_timesteps=args.total_timesteps,
+            n_envs=args.n_envs,
+            eval_episodes=args.eval_episodes,
+            seed=args.seed,
+            algorithm=args.algorithm,
+        )
+        search_config = HyperparameterSearchConfig(grid=grid or {}, max_configs=args.max_configs)
+        run_training_sweep(
+            output_dir=args.output_dir,
+            run_name=args.run_name,
+            training_config=training_config,
+            search_config=search_config,
         )
 
 
