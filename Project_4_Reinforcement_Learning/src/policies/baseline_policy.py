@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from Project_4_Reinforcement_Learning.src.config.env_config import EnvironmentConfig
+from Project_4_Reinforcement_Learning.src.config import EnvironmentConfig
 
 
 @dataclass(slots=True)

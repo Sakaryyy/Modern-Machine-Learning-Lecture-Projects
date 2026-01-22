@@ -6,10 +6,10 @@ import argparse
 from dataclasses import asdict
 from typing import Dict, List
 
-from Project_4_Reinforcement_Learning.src.config.env_config import EnvironmentConfig
-from Project_4_Reinforcement_Learning.src.environment.energy_budget_env import EnergyBudgetEnv, StepMetrics
-from Project_4_Reinforcement_Learning.src.policies.baseline_policy import BaselinePolicy
-from Project_4_Reinforcement_Learning.src.utils.logging import get_logger
+from Project_4_Reinforcement_Learning.src.config import EnvironmentConfig
+from Project_4_Reinforcement_Learning.src.environment import EnergyBudgetEnv, StepMetrics
+from Project_4_Reinforcement_Learning.src.logger import get_logger
+from Project_4_Reinforcement_Learning.src.policies import BaselinePolicy
 
 
 def _validate_metrics(metrics: StepMetrics, config: EnvironmentConfig) -> List[str]:
