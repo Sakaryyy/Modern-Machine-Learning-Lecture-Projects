@@ -894,7 +894,7 @@ def train_and_evaluate(
         test_brier = compute_brier_score(np.asarray(probs), np.asarray(splits.y_test))
 
         roc_summary = None
-        if data_cfg.anomaly_detection and splits.labels_test is not None:
+        if data_cfg.anomaly_detection:
             scores = negative_log_likelihood_scores(np.array(log_likelihoods))
             thresholds, fpr, tpr = compute_roc_curve(scores=scores, labels=splits.labels_test)
             auc = compute_auc(fpr, tpr)
