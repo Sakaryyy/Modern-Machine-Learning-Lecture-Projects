@@ -52,7 +52,6 @@ def _simulate_baseline(steps: int, seed: int | None, output_dir: Path, run_name:
 
     total_reward = 0.0
     step_idx = None
-
     for step_idx in range(steps):
         action = policy.select_action(observation)
         next_observation, reward, terminated, truncated, info = env.step(action)

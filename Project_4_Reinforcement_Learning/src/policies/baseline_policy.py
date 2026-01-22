@@ -26,7 +26,11 @@ class BaselinePolicy:
     """
 
     config: EnvironmentConfig
-    cheap_price_threshold: float = 1.5
+    charge_price_threshold_day: float = 0.85
+    charge_price_threshold_night: float = 1.15
+    discharge_price_threshold: float = 2.40
+    enable_solar_grid_arbitrage: bool = True
+    cheap_price_threshold: float | None = None
 
     def select_action(self, observation: np.ndarray) -> np.ndarray:
         """Select an action based on the current observation.
@@ -46,17 +50,44 @@ class BaselinePolicy:
         buying_price = float(observation[1])
         battery_energy = int(observation[2])
 
-        expected_demand = self._expected_demand(time_of_day)
+        p_max = int(self.config.max_solar_power)
+        e_max = int(self.config.max_battery_energy)
+        selling_price = float(getattr(self.config, "selling_price", 1.0))
 
-        solar_to_demand = expected_demand
-        solar_to_battery = self.config.max_solar_power
+        # Optional legacy override
+        charge_day = (
+            float(self.cheap_price_threshold)
+            if self.cheap_price_threshold is not None
+            else float(self.charge_price_threshold_day)
+        )
+        charge_night = float(self.charge_price_threshold_night)
+        discharge_th = float(self.discharge_price_threshold)
 
-        battery_to_demand = min(battery_energy, expected_demand)
+        is_night = time_of_day <= 5 or time_of_day >= 19
+        charge_th = charge_night if is_night else charge_day
 
-        if buying_price < self.cheap_price_threshold:
-            grid_to_battery = self.config.max_battery_energy - battery_energy
-        else:
-            grid_to_battery = 0
+        # Case 1: Arbitrage regime (model allows selling solar at R^S while buying at R^B_t).
+        if self.enable_solar_grid_arbitrage and buying_price < selling_price:
+            solar_to_demand = 0
+            solar_to_battery = 0
+            battery_to_demand = 0
+            grid_to_battery = e_max - battery_energy
+
+            return np.array(
+                [solar_to_demand, solar_to_battery, battery_to_demand, grid_to_battery],
+                dtype=np.int64,
+            )
+
+        # Default solar behaviour: attempt to cover demand first, then store leftover.
+        # The environment clamps these attempts to the actually available solar and capacity.
+        solar_to_demand = p_max
+        solar_to_battery = p_max
+
+        # Battery discharge: only when the current buying price is high.
+        battery_to_demand = battery_energy if buying_price >= discharge_th else 0
+
+        # Grid charging: only when buying price is low (more permissive at night).
+        grid_to_battery = (e_max - battery_energy) if buying_price <= charge_th else 0
 
         return np.array(
             [solar_to_demand, solar_to_battery, battery_to_demand, grid_to_battery],
