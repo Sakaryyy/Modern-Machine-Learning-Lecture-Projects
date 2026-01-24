@@ -30,8 +30,14 @@ def _validate_metrics(metrics: StepMetrics, config: EnvironmentConfig) -> List[s
 
     issues: List[str] = []
 
-    if not (0 <= metrics.battery_energy <= config.max_battery_energy):
-        issues.append("Battery energy outside valid bounds.")
+    if not (0 <= metrics.battery_energy <= metrics.battery_capacity + 1e-6):
+        issues.append("Battery energy outside valid capacity bounds.")
+
+    if not (0.0 <= metrics.battery_health <= 1.0):
+        issues.append("Battery health outside valid bounds.")
+
+    if metrics.battery_capacity > config.max_battery_energy + 1e-6:
+        issues.append("Battery capacity exceeds configured maximum.")
 
     solar_balance = (
             metrics.solar_to_demand + metrics.solar_to_battery + metrics.solar_sold
@@ -48,6 +54,9 @@ def _validate_metrics(metrics: StepMetrics, config: EnvironmentConfig) -> List[s
 
     if metrics.solar_sold < 0:
         issues.append("Solar sales must be non-negative.")
+
+    if metrics.battery_to_grid < 0:
+        issues.append("Battery sales must be non-negative.")
 
     return issues
 

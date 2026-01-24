@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 
 from Project_4_Reinforcement_Learning.src.config.env_config import EnvironmentConfig
@@ -17,8 +16,10 @@ from Project_4_Reinforcement_Learning.src.logger import (
 from Project_4_Reinforcement_Learning.src.policies.baseline_policy import BaselinePolicy
 from Project_4_Reinforcement_Learning.src.training import (
     AgentTrainingConfig,
+    RECOMMENDED_ALGORITHM,
     HyperparameterSearchConfig,
     run_training_sweep,
+    run_training
 )
 from Project_4_Reinforcement_Learning.src.utils import (
     EpisodeRecorder,
@@ -72,10 +73,12 @@ def _simulate_baseline(steps: int, seed: int | None, output_dir: Path, run_name:
             metrics=metrics,
         )
         logger.info(
-            "Step %s | reward=%.3f | battery=%s | sold=%s | bought=%s",
+            "Step %s | reward=%.3f | battery=%.2f | capacity=%.2f | health=%.2f | sold=%s | bought=%s",
             step_idx,
             reward,
             metrics.battery_energy,
+            metrics.battery_capacity,
+            metrics.battery_health,
             metrics.solar_sold,
             metrics.grid_to_battery + metrics.grid_to_demand,
         )
@@ -141,7 +144,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--total-timesteps",
         type=int,
-        default=40_000,
+        default=50_000,
         help="Total training timesteps for RL mode.",
     )
     parser.add_argument(
@@ -159,20 +162,26 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--algorithm",
         type=str,
-        default="PPO",
+        default=RECOMMENDED_ALGORITHM,
         help="Stable Baselines3 algorithm identifier.",
     )
     parser.add_argument(
-        "--grid-json",
-        type=Path,
-        default=None,
-        help="Optional JSON file describing the hyperparameter grid.",
+        "--generations",
+        type=int,
+        default=3,
+        help="Number of independent training generations.",
     )
     parser.add_argument(
         "--max-configs",
         type=int,
         default=None,
         help="Optional cap on the number of hyperparameter configurations.",
+    )
+    parser.add_argument(
+        "--hyperparameter-search-enabled",
+        type=bool,
+        default=False,
+        help="Whether to use hyperparameter search enabled.",
     )
     return parser.parse_args()
 
@@ -197,24 +206,28 @@ def main() -> None:
             seed=args.seed,
         )
     else:
-        grid = None
-        if args.grid_json is not None:
-            grid = json.loads(args.grid_json.read_text(encoding="utf-8"))
-
         training_config = AgentTrainingConfig(
             total_timesteps=args.total_timesteps,
             n_envs=args.n_envs,
             eval_episodes=args.eval_episodes,
             seed=args.seed,
             algorithm=args.algorithm,
+            generations=args.generations,
         )
-        search_config = HyperparameterSearchConfig(grid=grid or {}, max_configs=args.max_configs)
-        run_training_sweep(
-            output_dir=args.output_dir,
-            run_name=args.run_name,
-            training_config=training_config,
-            search_config=search_config,
-        )
+        if args.hyperparameter_search_enabled:
+            search_config = HyperparameterSearchConfig(grid={}, max_configs=args.max_configs)
+            run_training_sweep(
+                output_dir=args.output_dir,
+                run_name=args.run_name,
+                training_config=training_config,
+                search_config=search_config,
+            )
+        else:
+            run_training(
+                output_dir=args.output_dir,
+                run_name=args.run_name,
+                training_config=training_config,
+            )
 
 
 if __name__ == "__main__":

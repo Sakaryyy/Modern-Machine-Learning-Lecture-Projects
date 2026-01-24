@@ -119,6 +119,7 @@ class RLPlotter:
                 "solar_to_demand",
                 "solar_to_battery",
                 "battery_to_demand",
+                "battery_to_grid",
                 "grid_to_battery",
                 "grid_to_demand",
                 "solar_sold",
@@ -194,6 +195,39 @@ class RLPlotter:
             fig.savefig(output_dir / f"sweep_{hyperparameter}.png", bbox_inches="tight")
             plt.close(fig)
 
+    def plot_generation_summary(self, frame: pd.DataFrame, output_dir: Path) -> None:
+        """Plot reward statistics across training generations.
+
+        Parameters
+        ----------
+        frame:
+            Dataframe containing ``generation``, ``mean_reward``, and ``std_reward`` columns.
+        output_dir:
+            Directory where plots should be saved.
+        """
+
+        if frame.empty:
+            return
+
+        self.apply_style()
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        fig, ax = plt.subplots(figsize=(6, 4))
+        sns.lineplot(data=frame, x="generation", y="mean_reward", marker="o", ax=ax)
+        ax.fill_between(
+            frame["generation"],
+            frame["mean_reward"] - frame["std_reward"],
+            frame["mean_reward"] + frame["std_reward"],
+            alpha=0.2,
+        )
+        ax.set_title("Generation Performance Summary")
+        ax.set_xlabel("Generation")
+        ax.set_ylabel("Mean evaluation reward")
+        ax.grid(False)
+        fig.tight_layout()
+        fig.savefig(output_dir / "generation_summary.png", bbox_inches="tight")
+        plt.close(fig)
+
     def _default_specs(self) -> Sequence[PlotSpec]:
         """Return the default plotting specifications."""
 
@@ -207,7 +241,7 @@ class RLPlotter:
             PlotSpec(
                 name="battery_energy",
                 title="Battery Energy Over Time",
-                y_columns=["battery_energy"],
+                y_columns=["battery_energy", "battery_capacity", "battery_health"],
                 y_label="Energy units",
             ),
             PlotSpec(
@@ -218,8 +252,8 @@ class RLPlotter:
             ),
             PlotSpec(
                 name="price_signal",
-                title="Market and Buying Prices",
-                y_columns=["market_price", "buying_price"],
+                title="Market, Buying, and Selling Prices",
+                y_columns=["market_price", "buying_price", "selling_price"],
                 y_label="Price",
             ),
             PlotSpec(
@@ -229,12 +263,29 @@ class RLPlotter:
                 y_label="Intensity",
             ),
             PlotSpec(
+                name="forecast_signals",
+                title="Next-Hour Forecast Signals",
+                y_columns=[
+                    "forecast_solar_intensity_1",
+                    "forecast_market_price_1",
+                    "forecast_demand_1",
+                ],
+                y_label="Forecast value",
+            ),
+            PlotSpec(
+                name="battery_degradation",
+                title="Battery Degradation and Throughput",
+                y_columns=["battery_throughput", "degradation_amount", "self_discharge_loss"],
+                y_label="Energy / Capacity loss",
+            ),
+            PlotSpec(
                 name="actions",
                 title="Policy Actions",
                 y_columns=[
                     "action_solar_to_demand",
                     "action_solar_to_battery",
                     "action_battery_to_demand",
+                    "action_battery_to_grid",
                     "action_grid_to_battery",
                 ],
                 y_label="Planned energy units",

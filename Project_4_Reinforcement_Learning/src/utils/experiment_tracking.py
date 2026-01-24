@@ -326,11 +326,20 @@ class EpisodeRecorder:
             "observation_time_of_day": observation_values[0],
             "observation_buying_price": observation_values[1],
             "observation_battery_energy": observation_values[2],
+            "observation_battery_capacity": observation_values[3],
+            "observation_battery_health": observation_values[4],
             "action_solar_to_demand": action_values[0],
             "action_solar_to_battery": action_values[1],
             "action_battery_to_demand": action_values[2],
-            "action_grid_to_battery": action_values[3],
+            "action_battery_to_grid": action_values[3],
+            "action_grid_to_battery": action_values[4],
         }
+        for idx, value in enumerate(metrics.forecast_solar_intensity, start=1):
+            record[f"forecast_solar_intensity_{idx}"] = float(value)
+        for idx, value in enumerate(metrics.forecast_market_price, start=1):
+            record[f"forecast_market_price_{idx}"] = float(value)
+        for idx, value in enumerate(metrics.forecast_demand, start=1):
+            record[f"forecast_demand_{idx}"] = float(value)
         record.update(asdict(metrics))
         self._records.append(record)
 

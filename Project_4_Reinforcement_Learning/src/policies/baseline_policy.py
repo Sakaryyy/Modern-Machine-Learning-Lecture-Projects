@@ -38,21 +38,39 @@ class BaselinePolicy:
         Parameters
         ----------
         observation:
-            Array containing ``[time_of_day, buying_price, battery_energy]``.
+            Array containing ``[time_of_day, buying_price, battery_energy, battery_capacity,
+            battery_health, forecast_solar, forecast_price, forecast_demand]``.
 
         Returns
         -------
         numpy.ndarray
-            Action array ``[solar_to_demand, solar_to_battery, battery_to_demand, grid_to_battery]``.
+            Action array ``[solar_to_demand, solar_to_battery, battery_to_demand, battery_to_grid,
+            grid_to_battery]``.
         """
 
         time_of_day = int(observation[0])
         buying_price = float(observation[1])
-        battery_energy = int(observation[2])
+        battery_energy = float(observation[2])
+        battery_capacity = float(observation[3])
+        battery_health = float(observation[4])
 
         p_max = int(self.config.max_solar_power)
-        e_max = int(self.config.max_battery_energy)
-        selling_price = float(getattr(self.config, "selling_price", 1.0))
+        e_max = float(self.config.max_battery_energy)
+        market_price = buying_price - self.config.base_price - self.config.trade_fee_per_unit
+        selling_price = float(
+            max(
+                0.0,
+                market_price * self.config.selling_price_multiplier + self.config.selling_price_offset
+                - self.config.trade_fee_per_unit,
+            )
+        )
+        forecast_horizon = int(self.config.forecast_horizon)
+        forecast_start = 5
+        forecast_end = forecast_start + forecast_horizon
+        forecast_prices = observation[forecast_start + forecast_horizon: forecast_start + 2 * forecast_horizon]
+        forecast_demand = observation[forecast_start + 2 * forecast_horizon: forecast_start + 3 * forecast_horizon]
+        max_forecast_price = float(np.max(forecast_prices)) if forecast_prices.size else buying_price
+        avg_forecast_demand = float(np.mean(forecast_demand)) if forecast_demand.size else 0.0
 
         # Optional legacy override
         charge_day = (
@@ -66,15 +84,16 @@ class BaselinePolicy:
         is_night = time_of_day <= 5 or time_of_day >= 19
         charge_th = charge_night if is_night else charge_day
 
-        # Case 1: Arbitrage regime (model allows selling solar at R^S while buying at R^B_t).
+        # Case 1: Forecasted arbitrage window encourages charging the battery aggressively.
         if self.enable_solar_grid_arbitrage and buying_price < selling_price:
             solar_to_demand = 0
             solar_to_battery = 0
             battery_to_demand = 0
-            grid_to_battery = e_max - battery_energy
+            battery_to_grid = 0
+            grid_to_battery = int(round(e_max - battery_energy))
 
             return np.array(
-                [solar_to_demand, solar_to_battery, battery_to_demand, grid_to_battery],
+                [solar_to_demand, solar_to_battery, battery_to_demand, battery_to_grid, grid_to_battery],
                 dtype=np.int64,
             )
 
@@ -83,14 +102,22 @@ class BaselinePolicy:
         solar_to_demand = p_max
         solar_to_battery = p_max
 
-        # Battery discharge: only when the current buying price is high.
-        battery_to_demand = battery_energy if buying_price >= discharge_th else 0
+        # Battery discharge: only when the current buying price is high or forecast spikes soon.
+        should_discharge = buying_price >= discharge_th or max_forecast_price >= discharge_th
+        discharge_cap = battery_capacity * max(self.config.battery_degradation_threshold, 0.1)
+        battery_to_demand = int(round(battery_energy)) if should_discharge and battery_energy > discharge_cap else 0
+
+        # Battery-to-grid selling: use when prices are exceptionally high and health is strong.
+        battery_to_grid = 0
+        if max_forecast_price >= discharge_th * 1.1 and battery_health > 0.75:
+            buffer = max(0.0, avg_forecast_demand - battery_energy)
+            battery_to_grid = int(max(0.0, battery_energy - buffer))
 
         # Grid charging: only when buying price is low (more permissive at night).
-        grid_to_battery = (e_max - battery_energy) if buying_price <= charge_th else 0
+        grid_to_battery = int(round(e_max - battery_energy)) if buying_price <= charge_th else 0
 
         return np.array(
-            [solar_to_demand, solar_to_battery, battery_to_demand, grid_to_battery],
+            [solar_to_demand, solar_to_battery, battery_to_demand, battery_to_grid, grid_to_battery],
             dtype=np.int64,
         )
 
