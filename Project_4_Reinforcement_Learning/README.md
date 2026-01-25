@@ -50,6 +50,21 @@ Optionally provide a JSON grid file with hyperparameter values:
 python -m Project_4_Reinforcement_Learning.src.main --mode train --grid-json hyperparameter_grid.json
 ```
 
+### Long-horizon episodes (optional)
+
+By default, episodes are 24 hours long. If you want to encourage long-horizon degradation behavior
+within a single episode, you can extend the episode length to a multi-day horizon:
+
+```bash
+python -m Project_4_Reinforcement_Learning.src.main --mode train --long-horizon-days 365
+```
+
+You can also manually specify the episode length in hours:
+
+```bash
+python -m Project_4_Reinforcement_Learning.src.main --mode train --episode-length 168
+```
+
 ## Environment Summary
 
 The environment models:
@@ -61,3 +76,29 @@ The environment models:
 - Demand that must be fully covered each time step.
 
 For more details, see `src/env/energy_budget_env.py`.
+
+## Algorithm overview (supported options)
+
+This project currently supports two Stable Baselines3 algorithms:
+
+- **PPO (Proximal Policy Optimization)**: A robust, clipped-policy gradient method that performs
+  well in noisy environments with continuous stochasticity. PPO balances stable updates with good
+  sample efficiency and is resilient to reward variance, making it the default choice for this
+  energy budgeting task.
+- **A2C (Advantage Actor-Critic)**: A simpler on-policy method with faster iterations and lower
+  computational overhead. A2C is helpful for quick baselines or when you want a lighter-weight
+  training loop at the cost of potentially noisier updates.
+
+**Why PPO is the default here:** the environment has stochastic solar/demand/price dynamics and a
+MultiDiscrete action space. PPO’s clipped objective tends to learn more reliably under that noise,
+while still supporting the discrete action space without extra wrappers. A2C remains useful for
+fast experiments and comparisons, but PPO typically yields steadier performance for longer-horizon
+training runs.
+
+## Visual diagnostics
+
+Training runs now produce additional plots:
+
+- **Evaluation reward distribution** (agent vs baseline).
+- **Strategy performance comparison** (avg reward, battery energy, health).
+- **Energy allocation share comparison** (solar/battery/grid usage splits).

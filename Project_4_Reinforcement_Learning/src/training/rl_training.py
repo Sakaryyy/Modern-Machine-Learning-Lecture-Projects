@@ -55,12 +55,12 @@ class AgentTrainingConfig:
         PPO hyperparameters used for all generations.
     """
 
-    total_timesteps: int = 50_000
-    n_envs: int = 6
-    eval_episodes: int = 12
+    total_timesteps: int = 200_000
+    n_envs: int = 10
+    eval_episodes: int = 20
     seed: int | None = None
     algorithm: str = RECOMMENDED_ALGORITHM
-    generations: int = 3
+    generations: int = 10
     ppo_hyperparameters: Mapping[str, Any] = field(default_factory=dict)
 
 
@@ -582,6 +582,7 @@ def run_training_sweep(
         run_name: str | None,
         training_config: AgentTrainingConfig | None = None,
         search_config: HyperparameterSearchConfig | None = None,
+        env_config: EnvironmentConfig | None = None,
 ) -> TrainingSummaryHyperparameter:
     """Run a hyperparameter sweep and evaluate the best configuration.
 
@@ -595,6 +596,8 @@ def run_training_sweep(
         Training configuration describing the overall training budget.
     search_config:
         Hyperparameter sweep configuration.
+    env_config:
+        Optional environment configuration override (e.g., long-horizon episodes).
 
     Returns
     -------
@@ -608,7 +611,7 @@ def run_training_sweep(
 
     artifact_manager = RunArtifactManager(output_dir, run_name=run_name)
     run_metadata = artifact_manager.initialize()
-    config = EnvironmentConfig()
+    config = env_config or EnvironmentConfig()
 
     artifact_manager.save_config(config, filename="environment_config.json")
     artifact_manager.save_config(training_config, filename="training_config.json")
@@ -746,6 +749,12 @@ def run_training_sweep(
             output_dir=run_metadata.root_dir / "plots",
         )
 
+    plotter.plot_evaluation_comparison(
+        agent_summary_frame,
+        baseline_summary_frame,
+        output_dir=run_metadata.root_dir / "plots",
+    )
+
     agent_strategy = _summarize_strategy(agent_step_frame)
     baseline_strategy = _summarize_strategy(baseline_step_frame)
     strategy_report = _compile_analysis_report(
@@ -758,6 +767,11 @@ def run_training_sweep(
     artifact_manager.save_json(agent_strategy, filename="agent_strategy_summary.json", subdir="data")
     artifact_manager.save_json(baseline_strategy, filename="baseline_strategy_summary.json", subdir="data")
     artifact_manager.save_text(strategy_report, filename="strategy_report.txt", subdir="data")
+    plotter.plot_strategy_comparison(
+        agent_strategy,
+        baseline_strategy,
+        output_dir=run_metadata.root_dir / "plots",
+    )
 
     logger.info("Best hyperparameters: %s", best_hyperparameters)
     logger.info("Best mean reward: %.3f", best_score)
@@ -775,6 +789,7 @@ def run_training(
         output_dir: Path,
         run_name: str | None,
         training_config: AgentTrainingConfig | None = None,
+        env_config: EnvironmentConfig | None = None,
 ) -> TrainingSummary:
     """Run multiple generations of PPO training and evaluate the best agent.
 
@@ -786,6 +801,8 @@ def run_training(
         Optional descriptive name for the run folder.
     training_config:
         Training configuration describing the overall training budget.
+    env_config:
+        Optional environment configuration override (e.g., long-horizon episodes).
 
     Returns
     -------
@@ -799,7 +816,7 @@ def run_training(
 
     artifact_manager = RunArtifactManager(output_dir, run_name=run_name)
     run_metadata = artifact_manager.initialize()
-    config = EnvironmentConfig()
+    config = env_config or EnvironmentConfig()
 
     artifact_manager.save_config(config, filename="environment_config.json")
     artifact_manager.save_config(training_config, filename="training_config.json")
@@ -922,6 +939,11 @@ def run_training(
             baseline_step_frame[baseline_step_frame["episode"] == 1],
             output_dir=run_metadata.root_dir / "plots",
         )
+    plotter.plot_evaluation_comparison(
+        agent_summary_frame,
+        baseline_summary_frame,
+        output_dir=run_metadata.root_dir / "plots",
+    )
 
     agent_strategy = _summarize_strategy(agent_step_frame)
     baseline_strategy = _summarize_strategy(baseline_step_frame)
@@ -931,6 +953,11 @@ def run_training(
     artifact_manager.save_json(agent_strategy, filename="agent_strategy_summary.json", subdir="data")
     artifact_manager.save_json(baseline_strategy, filename="baseline_strategy_summary.json", subdir="data")
     artifact_manager.save_text(strategy_report, filename="strategy_report.txt", subdir="data")
+    plotter.plot_strategy_comparison(
+        agent_strategy,
+        baseline_strategy,
+        output_dir=run_metadata.root_dir / "plots",
+    )
 
     logger.info("Best generation: %s", best_generation)
     logger.info("Best mean reward: %.3f", best_score)

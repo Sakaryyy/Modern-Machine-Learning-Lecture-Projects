@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Iterable, Mapping, Sequence
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -227,6 +227,106 @@ class RLPlotter:
         fig.tight_layout()
         fig.savefig(output_dir / "generation_summary.png", bbox_inches="tight")
         plt.close(fig)
+
+    def plot_evaluation_comparison(
+            self,
+            agent_summary: pd.DataFrame,
+            baseline_summary: pd.DataFrame,
+            output_dir: Path,
+    ) -> None:
+        """Compare evaluation reward distributions for agent vs baseline."""
+
+        if agent_summary.empty or baseline_summary.empty:
+            return
+
+        self.apply_style()
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        agent_frame = agent_summary[["total_reward"]].copy()
+        agent_frame["policy"] = "Agent"
+        baseline_frame = baseline_summary[["total_reward"]].copy()
+        baseline_frame["policy"] = "Baseline"
+        combined = pd.concat([agent_frame, baseline_frame], ignore_index=True)
+
+        fig, ax = plt.subplots(figsize=(6, 4))
+        sns.boxplot(data=combined, x="policy", y="total_reward", ax=ax)
+        sns.stripplot(
+            data=combined,
+            x="policy",
+            y="total_reward",
+            ax=ax,
+            color="black",
+            alpha=0.35,
+        )
+        ax.set_title("Evaluation Reward Distribution")
+        ax.set_xlabel("Policy")
+        ax.set_ylabel("Total reward per episode")
+        ax.grid(False)
+        fig.tight_layout()
+        fig.savefig(output_dir / "evaluation_reward_distribution.png", bbox_inches="tight")
+        plt.close(fig)
+
+    def plot_strategy_comparison(
+            self,
+            agent_strategy: Mapping[str, float],
+            baseline_strategy: Mapping[str, float],
+            output_dir: Path,
+    ) -> None:
+        """Compare high-level strategy summaries for agent vs baseline."""
+
+        if not agent_strategy or not baseline_strategy:
+            return
+
+        self.apply_style()
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        performance_metrics = [
+            ("avg_reward", "Avg reward"),
+            ("avg_battery_energy", "Avg battery energy"),
+            ("avg_battery_health", "Avg battery health"),
+        ]
+        share_metrics = [
+            ("solar_to_demand_share", "Solar → demand share"),
+            ("battery_to_demand_share", "Battery → demand share"),
+            ("grid_to_demand_share", "Grid → demand share"),
+            ("solar_sold_share", "Solar sold share"),
+        ]
+
+        def _build_frame(metrics: Sequence[tuple[str, str]]) -> pd.DataFrame:
+            rows = []
+            for key, label in metrics:
+                if key not in agent_strategy or key not in baseline_strategy:
+                    continue
+                rows.append({"metric": label, "value": agent_strategy[key], "policy": "Agent"})
+                rows.append({"metric": label, "value": baseline_strategy[key], "policy": "Baseline"})
+            return pd.DataFrame(rows)
+
+        performance_frame = _build_frame(performance_metrics)
+        if not performance_frame.empty:
+            fig, ax = plt.subplots(figsize=(8, 4))
+            sns.barplot(data=performance_frame, x="metric", y="value", hue="policy", ax=ax)
+            ax.set_title("Strategy Performance Summary")
+            ax.set_xlabel("")
+            ax.set_ylabel("Value")
+            ax.grid(False)
+            ax.legend(loc="best")
+            fig.tight_layout()
+            fig.savefig(output_dir / "strategy_performance_summary.png", bbox_inches="tight")
+            plt.close(fig)
+
+        share_frame = _build_frame(share_metrics)
+        if not share_frame.empty:
+            fig, ax = plt.subplots(figsize=(8, 4))
+            sns.barplot(data=share_frame, x="metric", y="value", hue="policy", ax=ax)
+            ax.set_title("Energy Allocation Share Comparison")
+            ax.set_xlabel("")
+            ax.set_ylabel("Share")
+            ax.set_ylim(0.0, 1.0)
+            ax.grid(False)
+            ax.legend(loc="best")
+            fig.tight_layout()
+            fig.savefig(output_dir / "strategy_energy_shares.png", bbox_inches="tight")
+            plt.close(fig)
 
     def _default_specs(self) -> Sequence[PlotSpec]:
         """Return the default plotting specifications."""

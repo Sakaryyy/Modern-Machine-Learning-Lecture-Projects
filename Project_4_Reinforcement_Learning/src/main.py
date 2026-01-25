@@ -28,7 +28,13 @@ from Project_4_Reinforcement_Learning.src.utils import (
 )
 
 
-def _simulate_baseline(steps: int, seed: int | None, output_dir: Path, run_name: str | None) -> None:
+def _simulate_baseline(
+        steps: int,
+        seed: int | None,
+        output_dir: Path,
+        run_name: str | None,
+        config: EnvironmentConfig | None = None,
+) -> None:
     """Simulate the environment using the baseline policy.
 
     Parameters
@@ -41,16 +47,18 @@ def _simulate_baseline(steps: int, seed: int | None, output_dir: Path, run_name:
         Root directory where runs should be saved.
     run_name:
         Optional descriptive name for the run folder.
+    config:
+        Optional environment configuration override.
     """
 
     logger = get_logger("Simulation")
-    config = EnvironmentConfig()
-    env = EnergyBudgetEnv(config)
-    policy = BaselinePolicy(config)
+    env_config = config or EnvironmentConfig()
+    env = EnergyBudgetEnv(env_config)
+    policy = BaselinePolicy(env_config)
 
     artifact_manager = RunArtifactManager(output_dir, run_name=run_name)
     run_metadata = artifact_manager.initialize()
-    artifact_manager.save_config(config, filename="environment_config.json")
+    artifact_manager.save_config(env_config, filename="environment_config.json")
 
     recorder = EpisodeRecorder()
 
@@ -123,6 +131,18 @@ def parse_args() -> argparse.Namespace:
         help="Execution mode.",
     )
     parser.add_argument("--steps", type=int, default=24, help="Number of steps to run.")
+    parser.add_argument(
+        "--episode-length",
+        type=int,
+        default=24,
+        help="Episode length in hours (default: 24).",
+    )
+    parser.add_argument(
+        "--long-horizon-days",
+        type=int,
+        default=None,
+        help="Optional number of days for a long-horizon episode (overrides --episode-length).",
+    )
     parser.add_argument("--seed", type=int, default=None, help="Random seed.")
     parser.add_argument(
         "--output-dir",
@@ -144,19 +164,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--total-timesteps",
         type=int,
-        default=50_000,
+        default=200_000,
         help="Total training timesteps for RL mode.",
     )
     parser.add_argument(
         "--n-envs",
         type=int,
-        default=4,
+        default=10,
         help="Number of parallel environments for RL training.",
     )
     parser.add_argument(
         "--eval-episodes",
         type=int,
-        default=12,
+        default=20,
         help="Evaluation episodes for each configuration.",
     )
     parser.add_argument(
@@ -168,7 +188,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--generations",
         type=int,
-        default=3,
+        default=10,
         help="Number of independent training generations.",
     )
     parser.add_argument(
@@ -186,6 +206,15 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _build_env_config(args: argparse.Namespace) -> EnvironmentConfig:
+    """Construct an environment configuration from CLI arguments."""
+
+    episode_length = args.episode_length
+    if args.long_horizon_days is not None:
+        episode_length = max(1, args.long_horizon_days) * 24
+    return EnvironmentConfig(episode_length=episode_length)
+
+
 def main() -> None:
     """Run the selected project mode."""
 
@@ -196,11 +225,19 @@ def main() -> None:
     logger = get_logger("Main")
     logger.info("Starting Project 4 with mode '%s'", args.mode)
 
+    env_config = _build_env_config(args)
+
     if args.mode == "baseline":
-        _simulate_baseline(steps=args.steps, seed=args.seed, output_dir=args.output_dir, run_name=args.run_name)
+        _simulate_baseline(
+            steps=args.steps,
+            seed=args.seed,
+            output_dir=args.output_dir,
+            run_name=args.run_name,
+            config=env_config,
+        )
     elif args.mode == "diagnostics":
         run_interactive_diagnostics(
-            config=EnvironmentConfig(),
+            config=env_config,
             num_steps=args.steps,
             interactive=args.interactive,
             seed=args.seed,
@@ -221,12 +258,14 @@ def main() -> None:
                 run_name=args.run_name,
                 training_config=training_config,
                 search_config=search_config,
+                env_config=env_config,
             )
         else:
             run_training(
                 output_dir=args.output_dir,
                 run_name=args.run_name,
                 training_config=training_config,
+                env_config=env_config,
             )
 
 
