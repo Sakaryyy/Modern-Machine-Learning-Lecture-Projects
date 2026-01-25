@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+import time
 from dataclasses import dataclass, field
 from itertools import product
 from pathlib import Path
@@ -14,9 +15,10 @@ from sb3_contrib import MaskablePPO
 from sb3_contrib.common.wrappers.action_masker import ActionMasker
 from stable_baselines3 import A2C, PPO
 from stable_baselines3.common.base_class import BaseAlgorithm
-from stable_baselines3.common.callbacks import BaseCallback
+from stable_baselines3.common.callbacks import BaseCallback, CallbackList
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.vec_env import VecNormalize
+from tqdm import tqdm
 
 from Project_4_Reinforcement_Learning.src.config import EnvironmentConfig
 from Project_4_Reinforcement_Learning.src.environment import EnergyBudgetEnv, StepMetrics
@@ -67,6 +69,8 @@ class AgentTrainingConfig:
         Whether to resume training from the best model across generations.
     tensorboard_log:
         Whether to write TensorBoard logs to the run directory.
+    show_progress:
+        Whether to show tqdm progress bars for training and evaluation.
     """
 
     total_timesteps: int = 200_000
@@ -81,6 +85,7 @@ class AgentTrainingConfig:
     normalize_reward: bool = True
     resume_best_model: bool = True
     tensorboard_log: bool = True
+    show_progress: bool = True
 
 
 @dataclass(slots=True)
@@ -236,6 +241,62 @@ class EpisodeRewardCallback(BaseCallback):
         if not frame.empty:
             frame["avg_reward"] = frame["total_reward"].expanding().mean()
         return frame
+
+
+class TrainingProgressCallback(BaseCallback):
+    """Display per-step training progress and timing."""
+
+    def __init__(
+            self,
+            total_timesteps: int,
+            update_interval: int = 250,
+    ) -> None:
+        super().__init__()
+        self._total_timesteps = total_timesteps
+        self._update_interval = max(1, update_interval)
+        self._progress: tqdm | None = None
+        self._start_time: float | None = None
+        self._last_update_steps = 0
+        self._initial_timesteps = 0
+
+    def _on_training_start(self) -> None:
+        self._start_time = time.perf_counter()
+        self._initial_timesteps = self.num_timesteps
+        self._last_update_steps = 0
+        self._progress = tqdm(
+            total=self._total_timesteps,
+            desc="Training steps",
+            leave=True,
+            position=0,
+        )
+
+    def _on_step(self) -> bool:
+        if self._progress is None or self._start_time is None:
+            return True
+        steps_done = self.num_timesteps - self._initial_timesteps
+        if steps_done <= 0:
+            return True
+        if steps_done - self._last_update_steps < self._update_interval and steps_done < self._total_timesteps:
+            return True
+        elapsed = time.perf_counter() - self._start_time
+        steps_delta = steps_done - self._last_update_steps
+        if steps_delta > 0:
+            self._progress.update(steps_delta)
+        steps_per_second = steps_done / elapsed if elapsed > 0 else 0.0
+        ms_per_step = (elapsed / steps_done) * 1000.0 if steps_done > 0 else 0.0
+        self._progress.set_postfix(
+            {
+                "steps/s": f"{steps_per_second:.1f}",
+                "ms/step": f"{ms_per_step:.2f}",
+            }
+        )
+        self._last_update_steps = steps_done
+        return True
+
+    def _on_training_end(self) -> None:
+        if self._progress is not None:
+            self._progress.close()
+            self._progress = None
 
 
 def default_hyperparameter_grid() -> Dict[str, Sequence[Any]]:
@@ -473,6 +534,7 @@ def _evaluate_policy(
         seed: int | None,
         vec_normalize_path: Path | None = None,
         use_action_masking: bool = False,
+        show_progress: bool = True,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Evaluate a policy over multiple episodes and record diagnostics.
 
@@ -497,10 +559,32 @@ def _evaluate_policy(
     summaries: List[Dict[str, Any]] = []
     step_frames: List[pd.DataFrame] = []
 
-    for episode_idx in range(eval_episodes):
+    progress_bar = (
+        tqdm(range(eval_episodes), desc="Evaluating episodes", leave=True, position=0)
+        if show_progress
+        else range(eval_episodes)
+    )
+
+    if vec_normalize_path is None:
+        env = _make_env(config, seed=seed, use_action_masking=use_action_masking)
+    else:
+        vec_env = _make_vec_env(
+            config=config,
+            seed=seed,
+            n_envs=1,
+            monitor_dir=None,
+            use_action_masking=use_action_masking,
+            use_vec_normalize=True,
+            normalize_reward=False,
+        )
+        env = VecNormalize.load(str(vec_normalize_path), vec_env)
+        env.training = False
+        env.norm_reward = False
+
+    for episode_idx in progress_bar:
+        episode_start = time.perf_counter()
         recorder = EpisodeRecorder()
         if vec_normalize_path is None:
-            env = _make_env(config, seed=None if seed is None else seed + episode_idx)
             observation, _ = env.reset(seed=None if seed is None else seed + episode_idx)
 
             terminated = False
@@ -521,26 +605,16 @@ def _evaluate_policy(
                     truncated=truncated,
                     metrics=metrics,
                 )
-            env.close()
         else:
-            vec_env = _make_vec_env(
-                config=config,
-                seed=None if seed is None else seed + episode_idx,
-                n_envs=1,
-                monitor_dir=None,
-                use_action_masking=use_action_masking,
-                use_vec_normalize=True,
-                normalize_reward=False,
-            )
-            env = VecNormalize.load(str(vec_normalize_path), vec_env)
-            env.training = False
-            env.norm_reward = False
             observation = env.reset()
 
             done = False
             while not done:
                 current_observation = observation
-                action, _ = policy.predict(current_observation, deterministic=True)
+                if hasattr(policy, "predict"):
+                    action, _ = policy.predict(current_observation, deterministic=True)
+                else:
+                    action = policy.select_action(current_observation)
                 observation, reward, done, infos = env.step(action)
                 info = infos[0] if infos else {}
                 metrics: StepMetrics = info["metrics"]
@@ -552,7 +626,6 @@ def _evaluate_policy(
                     truncated=bool(info.get("TimeLimit.truncated", False)),
                     metrics=metrics,
                 )
-            env.close()
 
         summary = recorder.summary()
         summary.update({"episode": episode_idx + 1})
@@ -561,10 +634,40 @@ def _evaluate_policy(
         episode_frame = recorder.to_dataframe()
         episode_frame["episode"] = episode_idx + 1
         step_frames.append(episode_frame)
+        if show_progress and isinstance(progress_bar, tqdm):
+            episode_duration = time.perf_counter() - episode_start
+            progress_bar.set_postfix({"episode_s": f"{episode_duration:.2f}"})
 
+    env.close()
     summary_frame = pd.DataFrame(summaries)
     step_frame = pd.concat(step_frames, ignore_index=True) if step_frames else pd.DataFrame()
     return summary_frame, step_frame
+
+
+def _iterate_with_progress(
+        iterable: Iterable[Any],
+        total: int | None,
+        description: str,
+        show_progress: bool,
+) -> Iterable[Any]:
+    if not show_progress:
+        return iterable
+    return tqdm(iterable, total=total, desc=description)
+
+
+def _build_training_callbacks(
+        total_timesteps: int,
+        show_progress: bool,
+) -> BaseCallback:
+    reward_callback = EpisodeRewardCallback()
+    if not show_progress:
+        return reward_callback
+    return CallbackList(
+        [
+            reward_callback,
+            TrainingProgressCallback(total_timesteps=total_timesteps),
+        ]
+    )
 
 
 def _summarize_strategy(step_frame: pd.DataFrame) -> Dict[str, float]:
@@ -589,7 +692,6 @@ def _summarize_strategy(step_frame: pd.DataFrame) -> Dict[str, float]:
     demand_covered = float(step_frame["solar_to_demand"].sum())
     battery_covered = float(step_frame["battery_to_demand"].sum())
     grid_covered = float(step_frame["grid_to_demand"].sum())
-    battery_sold = float(step_frame["battery_to_grid"].sum())
     degradation_events = float(step_frame["degradation_event"].sum()) if "degradation_event" in step_frame else 0.0
     degradation_amount = float(step_frame["degradation_amount"].sum()) if "degradation_amount" in step_frame else 0.0
     total_steps = float(len(step_frame))
@@ -800,8 +902,15 @@ def run_training_sweep(
     best_training_frame: pd.DataFrame | None = None
     best_vec_normalize_path: Path | None = None
 
-    for idx, hyperparameters in enumerate(hyperparameter_grid, start=1):
+    sweep_iter = _iterate_with_progress(
+        enumerate(hyperparameter_grid, start=1),
+        total=len(hyperparameter_grid),
+        description="Training sweep",
+        show_progress=training_config.show_progress,
+    )
+    for idx, hyperparameters in sweep_iter:
         logger.info("Training configuration %s/%s: %s", idx, len(hyperparameter_grid), hyperparameters)
+        training_start = time.perf_counter()
         env = _make_vec_env(
             config=config,
             seed=training_config.seed,
@@ -812,7 +921,10 @@ def run_training_sweep(
             normalize_reward=training_config.normalize_reward,
         )
 
-        callback = EpisodeRewardCallback()
+        callback = _build_training_callbacks(
+            total_timesteps=training_config.total_timesteps,
+            show_progress=training_config.show_progress,
+        )
         model = _build_model(
             algorithm=training_config.algorithm,
             env=env,
@@ -821,14 +933,22 @@ def run_training_sweep(
             use_action_masking=training_config.use_action_masking,
             tensorboard_log=run_metadata.root_dir / "tensorboard" if training_config.tensorboard_log else None,
         )
-        model.learn(total_timesteps=training_config.total_timesteps, callback=callback)
+        model.learn(
+            total_timesteps=training_config.total_timesteps,
+            callback=callback,
+            progress_bar=False,
+        )
+        training_duration = time.perf_counter() - training_start
 
         vec_normalize_path = None
         if training_config.use_vec_normalize:
             vec_normalize_path = artifact_manager.save_policy(env, filename=f"vec_normalize_config_{idx}.pkl")
         env.close()
 
-        training_frame = callback.to_dataframe()
+        if isinstance(callback, CallbackList):
+            training_frame = callback.callbacks[0].to_dataframe()
+        else:
+            training_frame = callback.to_dataframe()
         if not training_frame.empty:
             artifact_manager.save_dataframe(
                 training_frame,
@@ -836,6 +956,7 @@ def run_training_sweep(
                 subdir="data",
             )
 
+        eval_start = time.perf_counter()
         summary_frame, step_frame = _evaluate_policy(
             model,
             config,
@@ -843,7 +964,9 @@ def run_training_sweep(
             training_config.seed,
             vec_normalize_path=vec_normalize_path,
             use_action_masking=training_config.use_action_masking,
+            show_progress=training_config.show_progress,
         )
+        eval_duration = time.perf_counter() - eval_start
 
         mean_reward = float(summary_frame["total_reward"].mean()) if not summary_frame.empty else -np.inf
         std_reward = float(summary_frame["total_reward"].std(ddof=0)) if not summary_frame.empty else 0.0
@@ -852,6 +975,8 @@ def run_training_sweep(
             **hyperparameters,
             "mean_reward": mean_reward,
             "std_reward": std_reward,
+            "training_seconds": training_duration,
+            "evaluation_seconds": eval_duration,
         }
         sweep_records.append(sweep_record)
 
@@ -872,6 +997,13 @@ def run_training_sweep(
             best_hyperparameters = hyperparameters
             best_training_frame = training_frame
             best_vec_normalize_path = vec_normalize_path
+        logger.info(
+            "Config %s done in %.2fs (train=%.2fs, eval=%.2fs).",
+            idx,
+            training_duration + eval_duration,
+            training_duration,
+            eval_duration,
+        )
 
     sweep_frame = pd.DataFrame(sweep_records)
     artifact_manager.save_dataframe(sweep_frame, filename="hyperparameter_sweep", subdir="data")
@@ -906,6 +1038,7 @@ def run_training_sweep(
             else None
         ),
         use_action_masking=training_config.use_action_masking,
+        show_progress=training_config.show_progress,
     )
     baseline_policy = BaselinePolicy(config)
     baseline_summary_frame, baseline_step_frame = _evaluate_policy(
@@ -913,6 +1046,7 @@ def run_training_sweep(
         config,
         training_config.eval_episodes,
         training_config.seed,
+        show_progress=training_config.show_progress,
     )
 
     artifact_manager.save_dataframe(agent_summary_frame, filename="best_agent_summary", subdir="data")
@@ -1014,9 +1148,16 @@ def run_training(
     best_model_path = run_metadata.root_dir / "models" / "best_ppo_agent.zip"
     best_vecnormalize_path = run_metadata.root_dir / "models" / "vec_normalize_best.pkl"
 
-    for generation in range(1, training_config.generations + 1):
+    generation_iter = _iterate_with_progress(
+        range(1, training_config.generations + 1),
+        total=training_config.generations,
+        description="Training generations",
+        show_progress=training_config.show_progress,
+    )
+    for generation in generation_iter:
         seed = None if training_config.seed is None else training_config.seed + generation
         logger.info("Training generation %s/%s with seed=%s", generation, training_config.generations, seed)
+        training_start = time.perf_counter()
 
         load_vecnormalize = (
                 training_config.use_vec_normalize
@@ -1033,7 +1174,10 @@ def run_training(
             normalize_reward=training_config.normalize_reward,
         )
 
-        callback = EpisodeRewardCallback()
+        callback = _build_training_callbacks(
+            total_timesteps=training_config.total_timesteps,
+            show_progress=training_config.show_progress,
+        )
         continue_training = False
         model: BaseAlgorithm
         if training_config.resume_best_model and best_model_path.exists():
@@ -1058,7 +1202,9 @@ def run_training(
             total_timesteps=training_config.total_timesteps,
             callback=callback,
             reset_num_timesteps=not continue_training,
+            progress_bar=training_config.show_progress,
         )
+        training_duration = time.perf_counter() - training_start
 
         vec_normalize_path = None
         if training_config.use_vec_normalize:
@@ -1067,7 +1213,10 @@ def run_training(
             )
         env.close()
 
-        training_frame = callback.to_dataframe()
+        if isinstance(callback, CallbackList):
+            training_frame = callback.callbacks[0].to_dataframe()
+        else:
+            training_frame = callback.to_dataframe()
         if not training_frame.empty:
             artifact_manager.save_dataframe(
                 training_frame,
@@ -1075,6 +1224,7 @@ def run_training(
                 subdir="data",
             )
 
+        eval_start = time.perf_counter()
         summary_frame, step_frame = _evaluate_policy(
             model,
             config,
@@ -1082,7 +1232,9 @@ def run_training(
             seed,
             vec_normalize_path=vec_normalize_path,
             use_action_masking=training_config.use_action_masking,
+            show_progress=training_config.show_progress,
         )
+        eval_duration = time.perf_counter() - eval_start
 
         mean_reward = float(summary_frame["total_reward"].mean()) if not summary_frame.empty else -np.inf
         std_reward = float(summary_frame["total_reward"].std(ddof=0)) if not summary_frame.empty else 0.0
@@ -1093,6 +1245,8 @@ def run_training(
                 "seed": seed,
                 "mean_reward": mean_reward,
                 "std_reward": std_reward,
+                "training_seconds": training_duration,
+                "evaluation_seconds": eval_duration,
             }
         )
 
@@ -1116,6 +1270,13 @@ def run_training(
             artifact_manager.save_policy(best_model, filename="best_ppo_agent.zip")
             if best_vec_normalize_path is not None:
                 shutil.copyfile(best_vec_normalize_path, best_vecnormalize_path)
+        logger.info(
+            "Generation %s done in %.2fs (train=%.2fs, eval=%.2fs).",
+            generation,
+            training_duration + eval_duration,
+            training_duration,
+            eval_duration,
+        )
 
     sweep_frame = pd.DataFrame(generation_records)
     artifact_manager.save_dataframe(sweep_frame, filename="generation_summary", subdir="data")
@@ -1140,6 +1301,7 @@ def run_training(
         config,
         training_config.eval_episodes,
         training_config.seed,
+        show_progress=training_config.show_progress,
     )
     baseline_policy = BaselinePolicy(config)
     baseline_summary_frame, baseline_step_frame = _evaluate_policy(
@@ -1149,6 +1311,7 @@ def run_training(
         training_config.seed,
         vec_normalize_path=best_vecnormalize_path if training_config.use_vec_normalize else None,
         use_action_masking=training_config.use_action_masking,
+        show_progress=training_config.show_progress,
     )
 
     artifact_manager.save_dataframe(agent_summary_frame, filename="best_agent_summary", subdir="data")
