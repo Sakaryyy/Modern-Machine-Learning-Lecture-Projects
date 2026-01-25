@@ -127,6 +127,10 @@ class RLPlotter:
             y_label="Energy units",
         )
 
+        self._plot_action_usage_by_hour(frame, output_dir)
+        self._plot_battery_health_distribution(frame, output_dir)
+
+
     def plot_training_metrics(self, frame: pd.DataFrame, output_dir: Path) -> None:
         """Plot training curves across episodes.
 
@@ -357,6 +361,12 @@ class RLPlotter:
                 y_label="Price",
             ),
             PlotSpec(
+                name="price_demand_actions",
+                title="Price, Demand, and Charging Actions",
+                y_columns=["buying_price", "demand", "battery_to_grid", "grid_to_battery"],
+                y_label="Value",
+            ),
+            PlotSpec(
                 name="solar_intensity",
                 title="Solar Intensity",
                 y_columns=["solar_intensity"],
@@ -391,6 +401,47 @@ class RLPlotter:
                 y_label="Planned energy units",
             ),
         ]
+
+    def _plot_action_usage_by_hour(self, frame: pd.DataFrame, output_dir: Path) -> None:
+        if "time_of_day" not in frame.columns:
+            return
+
+        columns = [
+            "solar_to_demand",
+            "solar_to_battery",
+            "battery_to_demand",
+            "battery_to_grid",
+            "grid_to_battery",
+        ]
+        if any(column not in frame.columns for column in columns):
+            return
+
+        grouped = frame.groupby("time_of_day")[columns].mean().reset_index()
+        self._plot_lines(
+            frame=grouped,
+            output_dir=output_dir,
+            name="action_usage_by_hour",
+            title="Average Action Usage by Hour",
+            y_columns=columns,
+            y_label="Average energy units",
+            x_column="time_of_day",
+        )
+
+    def _plot_battery_health_distribution(self, frame: pd.DataFrame, output_dir: Path) -> None:
+        if "battery_health" not in frame.columns or "battery_capacity" not in frame.columns:
+            return
+
+        fig, ax = plt.subplots(figsize=(6, 4))
+        sns.histplot(frame["battery_health"], bins=20, kde=True, ax=ax, color="tab:blue", label="Health")
+        sns.histplot(frame["battery_capacity"], bins=20, kde=True, ax=ax, color="tab:orange", label="Capacity")
+        ax.set_title("Battery Health and Capacity Distribution")
+        ax.set_xlabel("Value")
+        ax.set_ylabel("Count")
+        ax.grid(False)
+        ax.legend(loc="best")
+        fig.tight_layout()
+        fig.savefig(output_dir / "battery_health_capacity_distribution.png", bbox_inches="tight")
+        plt.close(fig)
 
     def _plot_lines(
             self,

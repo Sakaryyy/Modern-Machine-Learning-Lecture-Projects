@@ -143,6 +143,23 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional number of days for a long-horizon episode (overrides --episode-length).",
     )
+    parser.add_argument(
+        "--persist-battery-state",
+        action="store_true",
+        help="Persist battery energy/health across episode resets.",
+    )
+    parser.add_argument(
+        "--disable-randomize-start-day",
+        action="store_false",
+        dest="randomize_start_day",
+        help="Disable randomizing the start day-of-year on reset.",
+    )
+    parser.add_argument(
+        "--year-length-days",
+        type=int,
+        default=365,
+        help="Number of days in the seasonal cycle.",
+    )
     parser.add_argument("--seed", type=int, default=None, help="Random seed.")
     parser.add_argument(
         "--output-dir",
@@ -188,7 +205,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--generations",
         type=int,
-        default=10,
+        default=100,
         help="Number of independent training generations.",
     )
     parser.add_argument(
@@ -203,6 +220,38 @@ def parse_args() -> argparse.Namespace:
         default=False,
         help="Whether to use hyperparameter search enabled.",
     )
+    parser.add_argument(
+        "--disable-action-masking",
+        action="store_false",
+        dest="use_action_masking",
+        help="Disable MaskablePPO action masking.",
+    )
+    parser.add_argument(
+        "--disable-vec-normalize",
+        action="store_false",
+        dest="use_vec_normalize",
+        help="Disable VecNormalize for observations and rewards.",
+    )
+    parser.add_argument(
+        "--disable-resume-best-model",
+        action="store_false",
+        dest="resume_best_model",
+        help="Disable resuming from the best model across generations.",
+    )
+    parser.add_argument(
+        "--disable-tensorboard-log",
+        action="store_false",
+        dest="tensorboard_log",
+        help="Disable TensorBoard logging for training runs.",
+    )
+    parser.set_defaults(
+        randomize_start_day=True,
+        use_action_masking=True,
+        use_vec_normalize=True,
+        resume_best_model=True,
+        tensorboard_log=True,
+        persist_battery_state=True,
+    )
     return parser.parse_args()
 
 
@@ -212,7 +261,13 @@ def _build_env_config(args: argparse.Namespace) -> EnvironmentConfig:
     episode_length = args.episode_length
     if args.long_horizon_days is not None:
         episode_length = max(1, args.long_horizon_days) * 24
-    return EnvironmentConfig(episode_length=episode_length)
+    persist_battery_state = args.persist_battery_state or (args.long_horizon_days or 0) > 1
+    return EnvironmentConfig(
+        episode_length=episode_length,
+        persist_battery_state=persist_battery_state,
+        randomize_start_day=args.randomize_start_day,
+        year_length_days=args.year_length_days,
+    )
 
 
 def main() -> None:
@@ -250,6 +305,10 @@ def main() -> None:
             seed=args.seed,
             algorithm=args.algorithm,
             generations=args.generations,
+            use_action_masking=args.use_action_masking,
+            use_vec_normalize=args.use_vec_normalize,
+            resume_best_model=args.resume_best_model,
+            tensorboard_log=args.tensorboard_log,
         )
         if args.hyperparameter_search_enabled:
             search_config = HyperparameterSearchConfig(grid={}, max_configs=args.max_configs)

@@ -38,7 +38,7 @@ class BaselinePolicy:
         Parameters
         ----------
         observation:
-            Array containing ``[time_of_day, buying_price, battery_energy, battery_capacity,
+            Array containing ``[time_of_day, day_of_year, buying_price, battery_energy, battery_capacity,
             battery_health, forecast_solar, forecast_price, forecast_demand]``.
 
         Returns
@@ -49,10 +49,10 @@ class BaselinePolicy:
         """
 
         time_of_day = int(observation[0])
-        buying_price = float(observation[1])
-        battery_energy = float(observation[2])
-        battery_capacity = float(observation[3])
-        battery_health = float(observation[4])
+        buying_price = float(observation[2])
+        battery_energy = float(observation[3])
+        battery_capacity = float(observation[4])
+        battery_health = float(observation[5])
 
         p_max = int(self.config.max_solar_power)
         e_max = float(self.config.max_battery_energy)
@@ -65,8 +65,7 @@ class BaselinePolicy:
             )
         )
         forecast_horizon = int(self.config.forecast_horizon)
-        forecast_start = 5
-        forecast_end = forecast_start + forecast_horizon
+        forecast_start = 6
         forecast_prices = observation[forecast_start + forecast_horizon: forecast_start + 2 * forecast_horizon]
         forecast_demand = observation[forecast_start + 2 * forecast_horizon: forecast_start + 3 * forecast_horizon]
         max_forecast_price = float(np.max(forecast_prices)) if forecast_prices.size else buying_price

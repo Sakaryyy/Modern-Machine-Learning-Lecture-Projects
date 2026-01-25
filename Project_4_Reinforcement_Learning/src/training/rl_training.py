@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 from dataclasses import dataclass, field
 from itertools import product
 from pathlib import Path
@@ -9,10 +10,13 @@ from typing import Any, Dict, Iterable, List, Mapping, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
+from sb3_contrib import MaskablePPO
+from sb3_contrib.common.wrappers.action_masker import ActionMasker
 from stable_baselines3 import A2C, PPO
 from stable_baselines3.common.base_class import BaseAlgorithm
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.env_util import make_vec_env
+from stable_baselines3.common.vec_env import VecNormalize
 
 from Project_4_Reinforcement_Learning.src.config import EnvironmentConfig
 from Project_4_Reinforcement_Learning.src.environment import EnergyBudgetEnv, StepMetrics
@@ -53,6 +57,16 @@ class AgentTrainingConfig:
         Number of independent training runs (with different seeds).
     ppo_hyperparameters:
         PPO hyperparameters used for all generations.
+    use_action_masking:
+        Whether to enable MaskablePPO with action masks.
+    use_vec_normalize:
+        Whether to normalize observations (and optionally rewards).
+    normalize_reward:
+        Whether to normalize rewards when using VecNormalize.
+    resume_best_model:
+        Whether to resume training from the best model across generations.
+    tensorboard_log:
+        Whether to write TensorBoard logs to the run directory.
     """
 
     total_timesteps: int = 200_000
@@ -62,6 +76,11 @@ class AgentTrainingConfig:
     algorithm: str = RECOMMENDED_ALGORITHM
     generations: int = 10
     ppo_hyperparameters: Mapping[str, Any] = field(default_factory=dict)
+    use_action_masking: bool = True
+    use_vec_normalize: bool = True
+    normalize_reward: bool = True
+    resume_best_model: bool = True
+    tensorboard_log: bool = True
 
 
 @dataclass(slots=True)
@@ -134,17 +153,62 @@ class EpisodeRewardCallback(BaseCallback):
         super().__init__()
         self._episode_rewards: List[float] = []
         self._episode_lengths: List[int] = []
+        self._action_totals: List[Dict[str, float]] = []
+        self._degradation_events: List[int] = []
+        self._per_env_action_totals: List[Dict[str, float]] = []
+        self._per_env_degradation_events: List[int] = []
 
     def _on_step(self) -> bool:
         """Record episode statistics when available."""
 
         infos = self.locals.get("infos", [])
-        for info in infos:
+        actions = self.locals.get("actions", [])
+        if not self._per_env_action_totals and len(actions) > 0:
+            self._per_env_action_totals = [
+                {
+                    "solar_to_demand": 0.0,
+                    "solar_to_battery": 0.0,
+                    "battery_to_demand": 0.0,
+                    "battery_to_grid": 0.0,
+                    "grid_to_battery": 0.0,
+                }
+                for _ in range(len(actions))
+            ]
+            self._per_env_degradation_events = [0 for _ in range(len(actions))]
+
+        if len(actions) > 0:
+            for env_idx, action in enumerate(np.asarray(actions)):
+                if action is None:
+                    continue
+                action_values = np.asarray(action).reshape(-1)
+                if action_values.size != 5:
+                    continue
+                totals = self._per_env_action_totals[env_idx]
+                totals["solar_to_demand"] += float(action_values[0])
+                totals["solar_to_battery"] += float(action_values[1])
+                totals["battery_to_demand"] += float(action_values[2])
+                totals["battery_to_grid"] += float(action_values[3])
+                totals["grid_to_battery"] += float(action_values[4])
+
+        for env_idx, info in enumerate(infos):
+            metrics = info.get("metrics")
+            if metrics is not None and getattr(metrics, "degradation_event", False):
+                self._per_env_degradation_events[env_idx] += 1
             episode_info = info.get("episode")
             if episode_info is None:
                 continue
             self._episode_rewards.append(float(episode_info.get("r", 0.0)))
             self._episode_lengths.append(int(episode_info.get("l", 0)))
+            self._action_totals.append(dict(self._per_env_action_totals[env_idx]))
+            self._degradation_events.append(int(self._per_env_degradation_events[env_idx]))
+            self._per_env_action_totals[env_idx] = {
+                "solar_to_demand": 0.0,
+                "solar_to_battery": 0.0,
+                "battery_to_demand": 0.0,
+                "battery_to_grid": 0.0,
+                "grid_to_battery": 0.0,
+            }
+            self._per_env_degradation_events[env_idx] = 0
         return True
 
     def to_dataframe(self) -> pd.DataFrame:
@@ -161,6 +225,12 @@ class EpisodeRewardCallback(BaseCallback):
                 "episode": np.arange(1, len(self._episode_rewards) + 1),
                 "total_reward": self._episode_rewards,
                 "episode_length": self._episode_lengths,
+                "action_solar_to_demand": [totals.get("solar_to_demand", 0.0) for totals in self._action_totals],
+                "action_solar_to_battery": [totals.get("solar_to_battery", 0.0) for totals in self._action_totals],
+                "action_battery_to_demand": [totals.get("battery_to_demand", 0.0) for totals in self._action_totals],
+                "action_battery_to_grid": [totals.get("battery_to_grid", 0.0) for totals in self._action_totals],
+                "action_grid_to_battery": [totals.get("grid_to_battery", 0.0) for totals in self._action_totals],
+                "degradation_events": self._degradation_events,
             }
         )
         if not frame.empty:
@@ -285,7 +355,11 @@ def generate_hyperparameter_grid(
     return configs
 
 
-def _make_env(config: EnvironmentConfig, seed: int | None) -> EnergyBudgetEnv:
+def _make_env(
+        config: EnvironmentConfig,
+        seed: int | None,
+        use_action_masking: bool = False,
+) -> EnergyBudgetEnv:
     """Instantiate the energy budgeting environment for rollouts.
 
     Parameters
@@ -304,6 +378,28 @@ def _make_env(config: EnvironmentConfig, seed: int | None) -> EnergyBudgetEnv:
     env = EnergyBudgetEnv(config)
     if seed is not None:
         env.seed(seed)
+    if use_action_masking:
+        env = ActionMasker(env, lambda inner_env: inner_env.get_action_mask())
+    return env
+
+
+def _make_vec_env(
+        config: EnvironmentConfig,
+        seed: int | None,
+        n_envs: int,
+        monitor_dir: str | None,
+        use_action_masking: bool,
+        use_vec_normalize: bool,
+        normalize_reward: bool,
+):
+    env = make_vec_env(
+        lambda: _make_env(config, seed=seed, use_action_masking=use_action_masking),
+        n_envs=n_envs,
+        seed=seed,
+        monitor_dir=monitor_dir,
+    )
+    if use_vec_normalize:
+        env = VecNormalize(env, norm_obs=True, norm_reward=normalize_reward)
     return env
 
 
@@ -312,6 +408,8 @@ def _build_model(
         env,
         hyperparameters: Mapping[str, Any],
         seed: int | None,
+        use_action_masking: bool,
+        tensorboard_log: Path | None,
 ) -> BaseAlgorithm:
     """Construct a Stable Baselines3 model with the requested settings.
 
@@ -342,7 +440,7 @@ def _build_model(
     # its clipped objective tends to be more robust to noisy rewards while keeping the policy
     # updates conservative. A2C remains available for faster iterations and comparison.
     algorithm_registry = {
-        "PPO": PPO,
+        "PPO": MaskablePPO if use_action_masking else PPO,
         "A2C": A2C,
     }
     algorithm_key = algorithm.upper()
@@ -350,6 +448,8 @@ def _build_model(
         raise ValueError(
             "Only PPO and A2C are supported for the MultiDiscrete action space in this project."
         )
+    if use_action_masking and algorithm_key != "PPO":
+        raise ValueError("Action masking is only supported with PPO/MaskablePPO.")
 
     model_kwargs = dict(hyperparameters)
     # Stable Baselines3 warns when using PPO/A2C with MLP policies on GPU; force CPU unless
@@ -361,6 +461,7 @@ def _build_model(
         env=env,
         seed=seed,
         verbose=0,
+        tensorboard_log=str(tensorboard_log) if tensorboard_log else None,
         **model_kwargs,
     )
 
@@ -370,6 +471,8 @@ def _evaluate_policy(
         config: EnvironmentConfig,
         eval_episodes: int,
         seed: int | None,
+        vec_normalize_path: Path | None = None,
+        use_action_masking: bool = False,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Evaluate a policy over multiple episodes and record diagnostics.
 
@@ -395,28 +498,61 @@ def _evaluate_policy(
     step_frames: List[pd.DataFrame] = []
 
     for episode_idx in range(eval_episodes):
-        env = _make_env(config, seed=None if seed is None else seed + episode_idx)
         recorder = EpisodeRecorder()
-        observation, _ = env.reset(seed=None if seed is None else seed + episode_idx)
+        if vec_normalize_path is None:
+            env = _make_env(config, seed=None if seed is None else seed + episode_idx)
+            observation, _ = env.reset(seed=None if seed is None else seed + episode_idx)
 
-        terminated = False
-        truncated = False
-        while not (terminated or truncated):
-            current_observation = observation
-            if hasattr(policy, "predict"):
-                action, _ = policy.predict(current_observation, deterministic=True)
-            else:
-                action = policy.select_action(current_observation)
-            observation, reward, terminated, truncated, info = env.step(action)
-            metrics: StepMetrics = info["metrics"]
-            recorder.record_step(
-                observation=np.asarray(current_observation),
-                action=np.asarray(action),
-                reward=reward,
-                terminated=terminated,
-                truncated=truncated,
-                metrics=metrics,
+            terminated = False
+            truncated = False
+            while not (terminated or truncated):
+                current_observation = observation
+                if hasattr(policy, "predict"):
+                    action, _ = policy.predict(current_observation, deterministic=True)
+                else:
+                    action = policy.select_action(current_observation)
+                observation, reward, terminated, truncated, info = env.step(action)
+                metrics: StepMetrics = info["metrics"]
+                recorder.record_step(
+                    observation=np.asarray(current_observation),
+                    action=np.asarray(action),
+                    reward=reward,
+                    terminated=terminated,
+                    truncated=truncated,
+                    metrics=metrics,
+                )
+            env.close()
+        else:
+            vec_env = _make_vec_env(
+                config=config,
+                seed=None if seed is None else seed + episode_idx,
+                n_envs=1,
+                monitor_dir=None,
+                use_action_masking=use_action_masking,
+                use_vec_normalize=True,
+                normalize_reward=False,
             )
+            env = VecNormalize.load(str(vec_normalize_path), vec_env)
+            env.training = False
+            env.norm_reward = False
+            observation = env.reset()
+
+            done = False
+            while not done:
+                current_observation = observation
+                action, _ = policy.predict(current_observation, deterministic=True)
+                observation, reward, done, infos = env.step(action)
+                info = infos[0] if infos else {}
+                metrics: StepMetrics = info["metrics"]
+                recorder.record_step(
+                    observation=np.asarray(current_observation[0]),
+                    action=np.asarray(action[0]),
+                    reward=float(reward[0]),
+                    terminated=bool(done),
+                    truncated=bool(info.get("TimeLimit.truncated", False)),
+                    metrics=metrics,
+                )
+            env.close()
 
         summary = recorder.summary()
         summary.update({"episode": episode_idx + 1})
@@ -454,11 +590,16 @@ def _summarize_strategy(step_frame: pd.DataFrame) -> Dict[str, float]:
     battery_covered = float(step_frame["battery_to_demand"].sum())
     grid_covered = float(step_frame["grid_to_demand"].sum())
     battery_sold = float(step_frame["battery_to_grid"].sum())
+    degradation_events = float(step_frame["degradation_event"].sum()) if "degradation_event" in step_frame else 0.0
+    degradation_amount = float(step_frame["degradation_amount"].sum()) if "degradation_amount" in step_frame else 0.0
+    total_steps = float(len(step_frame))
 
     return {
         "avg_reward": float(step_frame["reward"].mean()),
         "avg_battery_energy": float(step_frame["battery_energy"].mean()),
         "avg_battery_health": float(step_frame["battery_health"].mean()),
+        "min_battery_health": float(step_frame["battery_health"].min()),
+        "avg_battery_capacity": float(step_frame["battery_capacity"].mean()),
         "solar_to_demand_share": demand_covered / total_demand if total_demand else 0.0,
         "battery_to_demand_share": battery_covered / total_demand if total_demand else 0.0,
         "grid_to_demand_share": grid_covered / total_demand if total_demand else 0.0,
@@ -466,6 +607,21 @@ def _summarize_strategy(step_frame: pd.DataFrame) -> Dict[str, float]:
         "avg_grid_to_battery": float(step_frame["grid_to_battery"].mean()),
         "avg_solar_to_battery": float(step_frame["solar_to_battery"].mean()),
         "avg_battery_to_grid": float(step_frame["battery_to_grid"].mean()),
+        "action_solar_to_demand_share": float(
+            step_frame["solar_to_demand"].sum() / total_steps) if total_steps else 0.0,
+        "action_solar_to_battery_share": float(step_frame["solar_to_battery"].sum() / total_steps)
+        if total_steps
+        else 0.0,
+        "action_battery_to_demand_share": float(step_frame["battery_to_demand"].sum() / total_steps)
+        if total_steps
+        else 0.0,
+        "action_battery_to_grid_share": float(
+            step_frame["battery_to_grid"].sum() / total_steps) if total_steps else 0.0,
+        "action_grid_to_battery_share": float(step_frame["grid_to_battery"].sum() / total_steps)
+        if total_steps
+        else 0.0,
+        "degradation_event_rate": degradation_events / total_steps if total_steps else 0.0,
+        "avg_degradation_amount": degradation_amount / total_steps if total_steps else 0.0,
     }
 
 
@@ -518,6 +674,8 @@ def _compile_analysis_report(
             "Learned strategy highlights (agent):",
             f"- Average reward per step: {agent_summary.get('avg_reward', 0.0):.3f}",
             f"- Average battery health: {agent_summary.get('avg_battery_health', 0.0):.3f}",
+            f"- Minimum battery health: {agent_summary.get('min_battery_health', 0.0):.3f}",
+            f"- Average battery capacity: {agent_summary.get('avg_battery_capacity', 0.0):.3f}",
             f"- Demand coverage (solar/battery/grid):",
             f"  {agent_summary.get('solar_to_demand_share', 0.0):.2%} /",
             f"  {agent_summary.get('battery_to_demand_share', 0.0):.2%} /",
@@ -525,6 +683,8 @@ def _compile_analysis_report(
             f"- Solar sold share: {agent_summary.get('solar_sold_share', 0.0):.2%}",
             f"- Average grid-to-battery charging: {agent_summary.get('avg_grid_to_battery', 0.0):.2f}",
             f"- Average battery-to-grid selling: {agent_summary.get('avg_battery_to_grid', 0.0):.2f}",
+            f"- Degradation event rate: {agent_summary.get('degradation_event_rate', 0.0):.2%}",
+            f"- Avg degradation per step: {agent_summary.get('avg_degradation_amount', 0.0):.4f}",
             "",
             "Baseline policy comparison:",
             f"- Baseline average reward per step: {baseline_summary.get('avg_reward', 0.0):.3f}",
@@ -638,14 +798,18 @@ def run_training_sweep(
     best_model: BaseAlgorithm | None = None
     best_hyperparameters: Mapping[str, Any] = {}
     best_training_frame: pd.DataFrame | None = None
+    best_vec_normalize_path: Path | None = None
 
     for idx, hyperparameters in enumerate(hyperparameter_grid, start=1):
         logger.info("Training configuration %s/%s: %s", idx, len(hyperparameter_grid), hyperparameters)
-        env = make_vec_env(
-            lambda: _make_env(config, seed=training_config.seed),
-            n_envs=training_config.n_envs,
+        env = _make_vec_env(
+            config=config,
             seed=training_config.seed,
+            n_envs=training_config.n_envs,
             monitor_dir=str(run_metadata.root_dir / "data"),
+            use_action_masking=training_config.use_action_masking,
+            use_vec_normalize=training_config.use_vec_normalize,
+            normalize_reward=training_config.normalize_reward,
         )
 
         callback = EpisodeRewardCallback()
@@ -654,8 +818,14 @@ def run_training_sweep(
             env=env,
             hyperparameters=hyperparameters,
             seed=training_config.seed,
+            use_action_masking=training_config.use_action_masking,
+            tensorboard_log=run_metadata.root_dir / "tensorboard" if training_config.tensorboard_log else None,
         )
         model.learn(total_timesteps=training_config.total_timesteps, callback=callback)
+
+        vec_normalize_path = None
+        if training_config.use_vec_normalize:
+            vec_normalize_path = artifact_manager.save_policy(env, filename=f"vec_normalize_config_{idx}.pkl")
         env.close()
 
         training_frame = callback.to_dataframe()
@@ -671,6 +841,8 @@ def run_training_sweep(
             config,
             training_config.eval_episodes,
             training_config.seed,
+            vec_normalize_path=vec_normalize_path,
+            use_action_masking=training_config.use_action_masking,
         )
 
         mean_reward = float(summary_frame["total_reward"].mean()) if not summary_frame.empty else -np.inf
@@ -699,6 +871,7 @@ def run_training_sweep(
             best_model = model
             best_hyperparameters = hyperparameters
             best_training_frame = training_frame
+            best_vec_normalize_path = vec_normalize_path
 
     sweep_frame = pd.DataFrame(sweep_records)
     artifact_manager.save_dataframe(sweep_frame, filename="hyperparameter_sweep", subdir="data")
@@ -718,12 +891,21 @@ def run_training_sweep(
         best_model,
         filename=f"best_{training_config.algorithm.lower()}_agent.zip",
     )
+    if training_config.use_vec_normalize and best_vec_normalize_path is not None:
+        target_path = run_metadata.root_dir / "models" / "vec_normalize_best.pkl"
+        shutil.copyfile(best_vec_normalize_path, target_path)
 
     agent_summary_frame, agent_step_frame = _evaluate_policy(
         best_model,
         config,
         training_config.eval_episodes,
         training_config.seed,
+        vec_normalize_path=(
+            run_metadata.root_dir / "models" / "vec_normalize_best.pkl"
+            if training_config.use_vec_normalize
+            else None
+        ),
+        use_action_masking=training_config.use_action_masking,
     )
     baseline_policy = BaselinePolicy(config)
     baseline_summary_frame, baseline_step_frame = _evaluate_policy(
@@ -828,27 +1010,61 @@ def run_training(
     best_model: PPO | BaseAlgorithm | None = None
     best_generation = 0
     best_training_frame: pd.DataFrame | None = None
+    best_vec_normalize_path: Path | None = None
+    best_model_path = run_metadata.root_dir / "models" / "best_ppo_agent.zip"
+    best_vecnormalize_path = run_metadata.root_dir / "models" / "vec_normalize_best.pkl"
 
     for generation in range(1, training_config.generations + 1):
         seed = None if training_config.seed is None else training_config.seed + generation
         logger.info("Training generation %s/%s with seed=%s", generation, training_config.generations, seed)
 
-        env = make_vec_env(
-            lambda: _make_env(config, seed=seed),
-            n_envs=training_config.n_envs,
+        load_vecnormalize = (
+                training_config.use_vec_normalize
+                and training_config.resume_best_model
+                and best_vecnormalize_path.exists()
+        )
+        env = _make_vec_env(
+            config=config,
             seed=seed,
+            n_envs=training_config.n_envs,
             monitor_dir=str(run_metadata.root_dir / "data"),
+            use_action_masking=training_config.use_action_masking,
+            use_vec_normalize=training_config.use_vec_normalize and not load_vecnormalize,
+            normalize_reward=training_config.normalize_reward,
         )
 
         callback = EpisodeRewardCallback()
-        model = _build_model(
-            algorithm=training_config.algorithm,
-            env=env,
-            hyperparameters=hyperparameters,
-            seed=seed,
+        continue_training = False
+        model: BaseAlgorithm
+        if training_config.resume_best_model and best_model_path.exists():
+            if load_vecnormalize:
+                env = VecNormalize.load(str(best_vecnormalize_path), env)
+                env.training = True
+                env.norm_reward = training_config.normalize_reward
+            model_class = MaskablePPO if training_config.use_action_masking else PPO
+            model = model_class.load(best_model_path, env=env)
+            continue_training = True
+        else:
+            model = _build_model(
+                algorithm=training_config.algorithm,
+                env=env,
+                hyperparameters=hyperparameters,
+                seed=seed,
+                use_action_masking=training_config.use_action_masking,
+                tensorboard_log=run_metadata.root_dir / "tensorboard" if training_config.tensorboard_log else None,
+            )
+
+        model.learn(
+            total_timesteps=training_config.total_timesteps,
+            callback=callback,
+            reset_num_timesteps=not continue_training,
         )
 
-        model.learn(total_timesteps=training_config.total_timesteps, callback=callback)
+        vec_normalize_path = None
+        if training_config.use_vec_normalize:
+            vec_normalize_path = artifact_manager.save_policy(
+                env, filename=f"vec_normalize_generation_{generation}.pkl"
+            )
         env.close()
 
         training_frame = callback.to_dataframe()
@@ -864,6 +1080,8 @@ def run_training(
             config,
             training_config.eval_episodes,
             seed,
+            vec_normalize_path=vec_normalize_path,
+            use_action_masking=training_config.use_action_masking,
         )
 
         mean_reward = float(summary_frame["total_reward"].mean()) if not summary_frame.empty else -np.inf
@@ -894,6 +1112,10 @@ def run_training(
             best_model = model
             best_generation = generation
             best_training_frame = training_frame
+            best_vec_normalize_path = vec_normalize_path
+            artifact_manager.save_policy(best_model, filename="best_ppo_agent.zip")
+            if best_vec_normalize_path is not None:
+                shutil.copyfile(best_vec_normalize_path, best_vecnormalize_path)
 
     sweep_frame = pd.DataFrame(generation_records)
     artifact_manager.save_dataframe(sweep_frame, filename="generation_summary", subdir="data")
@@ -908,7 +1130,10 @@ def run_training(
     if best_model is None:
         raise RuntimeError("No valid model was trained during the generation loop.")
 
-    artifact_manager.save_policy(best_model, filename="best_ppo_agent.zip")
+    if not best_model_path.exists():
+        artifact_manager.save_policy(best_model, filename="best_ppo_agent.zip")
+    if training_config.use_vec_normalize and best_vec_normalize_path is not None:
+        shutil.copyfile(best_vec_normalize_path, best_vecnormalize_path)
 
     agent_summary_frame, agent_step_frame = _evaluate_policy(
         best_model,
@@ -922,6 +1147,8 @@ def run_training(
         config,
         training_config.eval_episodes,
         training_config.seed,
+        vec_normalize_path=best_vecnormalize_path if training_config.use_vec_normalize else None,
+        use_action_masking=training_config.use_action_masking,
     )
 
     artifact_manager.save_dataframe(agent_summary_frame, filename="best_agent_summary", subdir="data")

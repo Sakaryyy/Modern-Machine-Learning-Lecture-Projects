@@ -55,6 +55,22 @@ class EnvironmentConfig:
         Offset applied to the selling price after the multiplier.
     trade_fee_per_unit:
         Transaction fee applied to each unit bought or sold.
+    persist_battery_state:
+        Keep battery energy, health, and capacity across resets.
+    randomize_start_day:
+        Randomize the starting day-of-year on reset for seasonal variety.
+    year_length_days:
+        Number of days in the seasonal cycle (default: 365).
+    seasonal_solar_amplitude:
+        Seasonal amplitude applied to solar production.
+    seasonal_demand_amplitude:
+        Seasonal amplitude applied to household demand.
+    seasonal_price_amplitude:
+        Seasonal amplitude applied to market prices.
+    weather_variability:
+        Daily weather multiplier variability applied to solar intensity.
+    daylight_variability:
+        Seasonal daylight multiplier applied to solar intensity.
     """
 
     max_battery_energy: int = 10
@@ -79,3 +95,11 @@ class EnvironmentConfig:
     selling_price_multiplier: float = 0.9
     selling_price_offset: float = 0.05
     trade_fee_per_unit: float = 0.02
+    persist_battery_state: bool = True
+    randomize_start_day: bool = True
+    year_length_days: int = 365
+    seasonal_solar_amplitude: float = 0.35
+    seasonal_demand_amplitude: float = 0.25
+    seasonal_price_amplitude: float = 0.15
+    weather_variability: float = 0.25
+    daylight_variability: float = 0.2
