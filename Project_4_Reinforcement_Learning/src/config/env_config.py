@@ -103,3 +103,9 @@ class EnvironmentConfig:
     seasonal_price_amplitude: float = 0.15
     weather_variability: float = 0.25
     daylight_variability: float = 0.2
+
+    # Reward shaping parameters (optional bonuses to improve learning signal)
+    enable_reward_shaping: bool = True
+    solar_utilization_bonus: float = 0.1  # Bonus per unit of solar used (not wasted)
+    battery_health_bonus: float = 0.05  # Bonus for maintaining battery health
+    demand_coverage_penalty: float = 0.0  # Additional penalty for unmet demand (beyond grid cost)

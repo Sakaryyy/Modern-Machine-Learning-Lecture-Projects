@@ -18,6 +18,7 @@ from Project_4_Reinforcement_Learning.src.training import (
     AgentTrainingConfig,
     RECOMMENDED_ALGORITHM,
     HyperparameterSearchConfig,
+    long_horizon_ppo_hyperparameters,
     run_training_sweep,
     run_training
 )
@@ -298,6 +299,17 @@ def main() -> None:
             seed=args.seed,
         )
     else:
+        # Use optimized hyperparameters for long-horizon training
+        ppo_hyperparameters = {}
+        if args.long_horizon_days is not None and args.long_horizon_days > 1:
+            episode_length = args.long_horizon_days * 24
+            ppo_hyperparameters = long_horizon_ppo_hyperparameters(episode_length)
+            logger.info(
+                "Using long-horizon PPO hyperparameters for %d-day episodes (gamma=%.6f)",
+                args.long_horizon_days,
+                ppo_hyperparameters["gamma"],
+            )
+
         training_config = AgentTrainingConfig(
             total_timesteps=args.total_timesteps,
             n_envs=args.n_envs,
@@ -305,6 +317,7 @@ def main() -> None:
             seed=args.seed,
             algorithm=args.algorithm,
             generations=args.generations,
+            ppo_hyperparameters=ppo_hyperparameters,
             use_action_masking=args.use_action_masking,
             use_vec_normalize=args.use_vec_normalize,
             resume_best_model=args.resume_best_model,

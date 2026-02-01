@@ -39,7 +39,8 @@ class BaselinePolicy:
         ----------
         observation:
             Array containing ``[time_of_day, day_of_year, buying_price, battery_energy, battery_capacity,
-            battery_health, forecast_solar, forecast_price, forecast_demand]``.
+            battery_health, current_solar_intensity, current_solar_production, current_demand,
+            forecast_solar, forecast_price, forecast_demand]``.
 
         Returns
         -------
@@ -53,6 +54,9 @@ class BaselinePolicy:
         battery_energy = float(observation[3])
         battery_capacity = float(observation[4])
         battery_health = float(observation[5])
+        # New observation fields for current state
+        current_solar_production = int(observation[7])
+        current_demand = int(observation[8])
 
         p_max = int(self.config.max_solar_power)
         e_max = float(self.config.max_battery_energy)
@@ -65,7 +69,8 @@ class BaselinePolicy:
             )
         )
         forecast_horizon = int(self.config.forecast_horizon)
-        forecast_start = 6
+        # Forecast starts at index 9 now (after 9 core observation fields)
+        forecast_start = 9
         forecast_prices = observation[forecast_start + forecast_horizon: forecast_start + 2 * forecast_horizon]
         forecast_demand = observation[forecast_start + 2 * forecast_horizon: forecast_start + 3 * forecast_horizon]
         max_forecast_price = float(np.max(forecast_prices)) if forecast_prices.size else buying_price
@@ -96,10 +101,11 @@ class BaselinePolicy:
                 dtype=np.int64,
             )
 
-        # Default solar behaviour: attempt to cover demand first, then store leftover.
-        # The environment clamps these attempts to the actually available solar and capacity.
-        solar_to_demand = p_max
-        solar_to_battery = p_max
+        # Use actual solar production and demand values for smarter allocation
+        # Cover demand first with solar, then store remainder
+        solar_to_demand = min(current_solar_production, current_demand)
+        remaining_solar = current_solar_production - solar_to_demand
+        solar_to_battery = remaining_solar  # Store all remaining solar
 
         # Battery discharge: only when the current buying price is high or forecast spikes soon.
         should_discharge = buying_price >= discharge_th or max_forecast_price >= discharge_th
