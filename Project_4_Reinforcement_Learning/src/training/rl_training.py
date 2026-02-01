@@ -32,6 +32,9 @@ __all__ = [
     "RECOMMENDED_ALGORITHM",
     "TrainingSummary",
     "TrainingSummaryHyperparameter",
+    "compute_gamma_for_horizon",
+    "default_ppo_hyperparameters",
+    "long_horizon_ppo_hyperparameters",
     "run_training_sweep",
     "run_training"
 ]
@@ -330,21 +333,119 @@ def default_ppo_hyperparameters() -> Dict[str, Any]:
     -------
     dict
         Mapping of PPO hyperparameters to use for training.
+
+    Notes
+    -----
+    Key optimizations:
+    - learning_rate: 3e-4 is more stable than 1e-3 for PPO
+    - ent_coef: 0.02 encourages more exploration in the large action space
+    - n_steps: 2048 allows for better advantage estimation
+    - batch_size: 128 for more frequent updates
+    - gamma: 0.99 is suitable for 24-hour episodes; for longer episodes,
+      use compute_gamma_for_horizon() to adjust appropriately
+    - policy_kwargs: Larger networks for the complex action space
     """
 
     return {
-        "learning_rate": 0.001,
-        "gamma": 0.99,
-        "gae_lambda": 0.9,
-        "ent_coef": 0.01,
+        "learning_rate": 3e-4,  # More stable than 1e-3
+        "gamma": 0.99,  # Suitable for 24-hour episodes
+        "gae_lambda": 0.95,  # Higher for better advantage estimation
+        "ent_coef": 0.02,  # More exploration for complex action space
         "clip_range": 0.2,
-        "n_steps": 1024,
-        "batch_size": 256,
+        "n_steps": 2048,  # More samples before update
+        "batch_size": 128,  # More frequent gradient updates
         "vf_coef": 0.5,
         "max_grad_norm": 0.5,
         "normalize_advantage": True,
-        "n_epochs": 5,
+        "n_epochs": 10,  # More epochs per update
+        # Larger network for complex MultiDiscrete action space (12x12x11x11x11 = 191,664 actions)
+        "policy_kwargs": {
+            "net_arch": {
+                "pi": [256, 256, 128],  # Policy network: deeper for action complexity
+                "vf": [256, 256, 128],  # Value network: matches policy depth
+            },
+        },
     }
+
+
+def long_horizon_ppo_hyperparameters(episode_length: int) -> Dict[str, Any]:
+    """Provide PPO hyperparameters optimized for long-horizon training.
+
+    Parameters
+    ----------
+    episode_length:
+        Number of steps per episode (e.g., 8760 for a year).
+
+    Returns
+    -------
+    dict
+        PPO hyperparameters tuned for long-horizon learning.
+
+    Notes
+    -----
+    Long-horizon training requires:
+    - Higher gamma to not discount away future rewards
+    - More n_steps to capture longer-term patterns
+    - Lower learning rate for stability over long rollouts
+    - Higher entropy for sustained exploration
+    """
+
+    gamma = compute_gamma_for_horizon(episode_length, end_discount=0.1)
+
+    return {
+        "learning_rate": 1e-4,  # Lower for stability in long rollouts
+        "gamma": gamma,  # Auto-computed for episode length
+        "gae_lambda": 0.98,  # Higher for long-horizon advantage estimation
+        "ent_coef": 0.03,  # More exploration for seasonal patterns
+        "clip_range": 0.15,  # Smaller for more conservative updates
+        "n_steps": min(4096, episode_length // 2),  # Longer rollouts, capped
+        "batch_size": 256,  # Larger batches for variance reduction
+        "vf_coef": 0.5,
+        "max_grad_norm": 0.5,
+        "normalize_advantage": True,
+        "n_epochs": 10,
+        "policy_kwargs": {
+            "net_arch": {
+                "pi": [512, 256, 256],  # Larger network for complex patterns
+                "vf": [512, 256, 256],
+            },
+        },
+    }
+
+
+def compute_gamma_for_horizon(episode_length: int, end_discount: float = 0.1) -> float:
+    """Compute appropriate gamma for a given episode length.
+
+    For long-horizon training, we need a higher gamma to ensure rewards
+    at the end of the episode are not discounted to near-zero.
+
+    Parameters
+    ----------
+    episode_length:
+        Number of steps in an episode.
+    end_discount:
+        Target discount factor at the end of the episode.
+        Default 0.1 means rewards at the final step are worth 10% of immediate rewards.
+
+    Returns
+    -------
+    float
+        Appropriate gamma value.
+
+    Examples
+    --------
+    >>> compute_gamma_for_horizon(24)    # 24-hour episode
+    0.9090...
+    >>> compute_gamma_for_horizon(8760)  # Year-long episode
+    0.9997...
+    """
+    if episode_length <= 1:
+        return 0.99
+    # gamma^episode_length = end_discount
+    # gamma = end_discount^(1/episode_length)
+    gamma = end_discount ** (1.0 / episode_length)
+    # Clamp to reasonable range
+    return float(np.clip(gamma, 0.9, 0.9999))
 
 
 def default_algorithm_hyperparameter_grid(algorithm: str) -> Dict[str, Sequence[Any]]:
@@ -1041,11 +1142,14 @@ def run_training_sweep(
         show_progress=training_config.show_progress,
     )
     baseline_policy = BaselinePolicy(config)
+    # Baseline policy expects raw (unnormalized) observations - no vec_normalize
     baseline_summary_frame, baseline_step_frame = _evaluate_policy(
         baseline_policy,
         config,
         training_config.eval_episodes,
         training_config.seed,
+        vec_normalize_path=None,  # Baseline uses absolute price thresholds
+        use_action_masking=False,
         show_progress=training_config.show_progress,
     )
 
@@ -1128,11 +1232,24 @@ def run_training(
 
     logger = get_logger("Training")
     training_config = training_config or AgentTrainingConfig()
-    hyperparameters = dict(training_config.ppo_hyperparameters) or default_ppo_hyperparameters()
+    hyperparameters = dict(training_config.ppo_hyperparameters) if training_config.ppo_hyperparameters else default_ppo_hyperparameters()
 
     artifact_manager = RunArtifactManager(output_dir, run_name=run_name)
     run_metadata = artifact_manager.initialize()
     config = env_config or EnvironmentConfig()
+
+    # Auto-compute gamma for long-horizon training if not explicitly set
+    if "gamma" not in training_config.ppo_hyperparameters:
+        episode_length = config.episode_length
+        if episode_length > 24:
+            computed_gamma = compute_gamma_for_horizon(episode_length, end_discount=0.1)
+            hyperparameters["gamma"] = computed_gamma
+            logger.info(
+                "Long-horizon episode detected (%d steps). Auto-computed gamma=%.6f to ensure "
+                "end-of-episode rewards maintain ~10%% value.",
+                episode_length,
+                computed_gamma,
+            )
 
     artifact_manager.save_config(config, filename="environment_config.json")
     artifact_manager.save_config(training_config, filename="training_config.json")
@@ -1301,16 +1418,21 @@ def run_training(
         config,
         training_config.eval_episodes,
         training_config.seed,
+        vec_normalize_path=best_vecnormalize_path if training_config.use_vec_normalize else None,
+        use_action_masking=training_config.use_action_masking,
         show_progress=training_config.show_progress,
     )
     baseline_policy = BaselinePolicy(config)
+    # IMPORTANT: Baseline policy expects raw (unnormalized) observations, so we do NOT
+    # pass vec_normalize_path here. The baseline policy uses absolute values like
+    # buying_price thresholds, which would break with normalized observations.
     baseline_summary_frame, baseline_step_frame = _evaluate_policy(
         baseline_policy,
         config,
         training_config.eval_episodes,
         training_config.seed,
-        vec_normalize_path=best_vecnormalize_path if training_config.use_vec_normalize else None,
-        use_action_masking=training_config.use_action_masking,
+        vec_normalize_path=None,  # Baseline expects raw observations
+        use_action_masking=False,  # Baseline doesn't use action masking
         show_progress=training_config.show_progress,
     )
 

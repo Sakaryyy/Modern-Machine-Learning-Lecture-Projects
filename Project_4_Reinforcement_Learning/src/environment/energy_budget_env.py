@@ -153,14 +153,28 @@ class EnergyBudgetEnv(gym.Env):
         self._buying_price_clip: float = float(self.config.buying_price_clip)
         self._forecast_horizon: int = int(self.config.forecast_horizon)
 
-        observation_low = [0.0, 0.0, -self._buying_price_clip, 0.0, 0.0, 0.0]
+        # Core state: time, price, battery, PLUS current solar and demand (critical for decision-making)
+        observation_low = [
+            0.0,  # time_of_day
+            0.0,  # day_of_year
+            -self._buying_price_clip,  # buying_price
+            0.0,  # battery_energy
+            0.0,  # battery_capacity
+            0.0,  # battery_health
+            0.0,  # current_solar_intensity (NEW - critical for allocation decisions)
+            0.0,  # current_solar_production (NEW - discrete units available)
+            0.0,  # current_demand (NEW - critical for demand coverage planning)
+        ]
         observation_high = [
-            23.0,
-            float(self.config.year_length_days - 1),
-            self._buying_price_clip,
-            float(self.config.max_battery_energy),
-            float(self.config.max_battery_energy),
-            1.0,
+            23.0,  # time_of_day
+            float(self.config.year_length_days - 1),  # day_of_year
+            self._buying_price_clip,  # buying_price
+            float(self.config.max_battery_energy),  # battery_energy
+            float(self.config.max_battery_energy),  # battery_capacity
+            1.0,  # battery_health
+            1.0,  # current_solar_intensity (NEW)
+            float(self.config.max_solar_power),  # current_solar_production (NEW)
+            float(self.config.max_demand),  # current_demand (NEW)
         ]
         forecast_low = [0.0] * self._forecast_horizon + [-self._buying_price_clip] * self._forecast_horizon
         forecast_low += [0.0] * self._forecast_horizon
@@ -366,6 +380,15 @@ class EnergyBudgetEnv(gym.Env):
         if degradation_amount > 0.0:
             balance -= degradation_amount * self.config.degradation_cost_per_unit
 
+        # Reward shaping: additional signals to improve learning
+        if self.config.enable_reward_shaping:
+            # Bonus for utilizing solar energy (not wasting it)
+            solar_utilized = solar_to_demand + solar_to_battery
+            balance += solar_utilized * self.config.solar_utilization_bonus
+
+            # Bonus for maintaining good battery health
+            balance += self._battery_health * self.config.battery_health_bonus
+
         metrics = StepMetrics(
             time_step=self._time_step,
             time_of_day=time_of_day,
@@ -559,7 +582,14 @@ class EnergyBudgetEnv(gym.Env):
         -------
         numpy.ndarray
             Observation vector of ``[time_of_day, day_of_year, buying_price, battery_energy,
-            battery_capacity, battery_health, forecast_solar, forecast_price, forecast_demand]``.
+            battery_capacity, battery_health, current_solar_intensity, current_solar_production,
+            current_demand, forecast_solar, forecast_price, forecast_demand]``.
+
+        Notes
+        -----
+        The observation includes current solar production and demand which are critical
+        for the agent to make informed allocation decisions. Without these, the agent
+        cannot know how much solar energy is available or how much demand needs covering.
         """
 
         time_of_day = self._current_time_of_day()
@@ -570,6 +600,10 @@ class EnergyBudgetEnv(gym.Env):
         buying_price = float(
             np.clip(buying_price_raw, -self._buying_price_clip, self._buying_price_clip)
         )
+
+        # Current solar production (discrete units) - critical for allocation decisions
+        current_solar_production = int(np.floor(self.config.max_solar_power * self._current_solar_intensity))
+
         forecast_values = (
                 list(self._forecast_solar) + list(self._forecast_price) + list(self._forecast_demand)
         )
@@ -581,6 +615,9 @@ class EnergyBudgetEnv(gym.Env):
                 float(self._battery_energy),
                 float(self._battery_capacity),
                 float(self._battery_health),
+                float(self._current_solar_intensity),  # Current solar intensity [0, 1]
+                float(current_solar_production),  # Discrete solar units available now
+                float(self._current_demand),  # Current demand that must be covered
                 *forecast_values,
             ],
             dtype=np.float32,
