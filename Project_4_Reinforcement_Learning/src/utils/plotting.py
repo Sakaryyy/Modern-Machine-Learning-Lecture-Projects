@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Mapping, Sequence
+from typing import Any, Dict, Iterable, List, Mapping, Sequence
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 import seaborn as sns
 
@@ -498,4 +499,570 @@ class RLPlotter:
         ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1.0))
         fig.tight_layout()
         fig.savefig(output_dir / f"{name}.png", bbox_inches="tight")
+        plt.close(fig)
+
+    # ==================== COMPREHENSIVE RL DIAGNOSTICS ====================
+
+    def plot_detailed_training_diagnostics(
+            self,
+            detailed_metrics: Dict[str, Any],
+            output_dir: Path,
+    ) -> None:
+        """Plot comprehensive training diagnostics from DetailedTrainingDiagnosticsCallback.
+
+        Parameters
+        ----------
+        detailed_metrics:
+            Dictionary containing all training metrics from the callback.
+        output_dir:
+            Directory where plots should be saved.
+        """
+        self.apply_style()
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Plot learning curves with rolling averages
+        self._plot_learning_curves(detailed_metrics, output_dir)
+
+        # Plot value function estimates
+        self._plot_value_estimates(detailed_metrics, output_dir)
+
+        # Plot advantage statistics
+        self._plot_advantage_stats(detailed_metrics, output_dir)
+
+        # Plot reward distributions
+        self._plot_reward_distributions(detailed_metrics, output_dir)
+
+        # Plot environment state distributions
+        self._plot_env_state_distributions(detailed_metrics, output_dir)
+
+        # Plot PPO-specific metrics
+        self._plot_ppo_metrics(detailed_metrics, output_dir)
+
+        # Create summary dashboard
+        self._plot_training_dashboard(detailed_metrics, output_dir)
+
+    def _plot_learning_curves(
+            self,
+            metrics: Dict[str, Any],
+            output_dir: Path,
+    ) -> None:
+        """Plot detailed learning curves with rolling averages."""
+        episode_rewards = metrics.get("episode_rewards", [])
+        if not episode_rewards:
+            return
+
+        fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+
+        # Raw rewards
+        ax = axes[0, 0]
+        episodes = np.arange(1, len(episode_rewards) + 1)
+        ax.plot(episodes, episode_rewards, alpha=0.3, label="Raw rewards")
+
+        # Rolling averages at different windows
+        for window in [10, 50, 100]:
+            if len(episode_rewards) >= window:
+                rolling = pd.Series(episode_rewards).rolling(window=window).mean()
+                ax.plot(episodes, rolling, label=f"{window}-episode avg", linewidth=2)
+
+        ax.set_xlabel("Episode")
+        ax.set_ylabel("Total Reward")
+        ax.set_title("Learning Curve with Rolling Averages")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+
+        # Reward improvement over time (split into segments)
+        ax = axes[0, 1]
+        n_segments = min(10, len(episode_rewards) // 10)
+        if n_segments >= 2:
+            segment_size = len(episode_rewards) // n_segments
+            segment_means = []
+            segment_stds = []
+            segment_labels = []
+            for i in range(n_segments):
+                start = i * segment_size
+                end = (i + 1) * segment_size if i < n_segments - 1 else len(episode_rewards)
+                segment = episode_rewards[start:end]
+                segment_means.append(np.mean(segment))
+                segment_stds.append(np.std(segment))
+                segment_labels.append(f"{start + 1}-{end}")
+
+            x_pos = np.arange(n_segments)
+            ax.bar(x_pos, segment_means, yerr=segment_stds, capsize=3)
+            ax.set_xlabel("Training Segment")
+            ax.set_ylabel("Mean Reward")
+            ax.set_title("Reward by Training Segment")
+            ax.set_xticks(x_pos)
+            ax.set_xticklabels(segment_labels, rotation=45, ha="right")
+
+        # Cumulative reward
+        ax = axes[1, 0]
+        cumulative = np.cumsum(episode_rewards)
+        ax.plot(episodes, cumulative)
+        ax.set_xlabel("Episode")
+        ax.set_ylabel("Cumulative Reward")
+        ax.set_title("Cumulative Reward Over Training")
+        ax.grid(True, alpha=0.3)
+
+        # Episode lengths
+        ax = axes[1, 1]
+        episode_lengths = metrics.get("episode_lengths", [])
+        if episode_lengths:
+            ax.plot(np.arange(1, len(episode_lengths) + 1), episode_lengths, alpha=0.5)
+            if len(episode_lengths) >= 10:
+                rolling = pd.Series(episode_lengths).rolling(window=10).mean()
+                ax.plot(np.arange(1, len(episode_lengths) + 1), rolling, label="10-ep avg", linewidth=2)
+            ax.set_xlabel("Episode")
+            ax.set_ylabel("Episode Length")
+            ax.set_title("Episode Lengths Over Training")
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+
+        fig.tight_layout()
+        fig.savefig(output_dir / "learning_curves_detailed.png", bbox_inches="tight", dpi=150)
+        plt.close(fig)
+
+    def _plot_value_estimates(
+            self,
+            metrics: Dict[str, Any],
+            output_dir: Path,
+    ) -> None:
+        """Plot value function estimates over training."""
+        value_estimates = metrics.get("value_estimates", [])
+        if not value_estimates:
+            return
+
+        fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+
+        # Value estimates over rollouts
+        ax = axes[0]
+        rollouts = np.arange(1, len(value_estimates) + 1)
+        ax.plot(rollouts, value_estimates)
+        ax.set_xlabel("Rollout")
+        ax.set_ylabel("Mean Value Estimate")
+        ax.set_title("Value Function Estimates Over Training")
+        ax.grid(True, alpha=0.3)
+
+        # Value estimate distribution
+        ax = axes[1]
+        ax.hist(value_estimates, bins=30, edgecolor="black", alpha=0.7)
+        ax.axvline(np.mean(value_estimates), color="red", linestyle="--", label=f"Mean: {np.mean(value_estimates):.2f}")
+        ax.set_xlabel("Value Estimate")
+        ax.set_ylabel("Frequency")
+        ax.set_title("Distribution of Value Estimates")
+        ax.legend()
+
+        fig.tight_layout()
+        fig.savefig(output_dir / "value_estimates.png", bbox_inches="tight", dpi=150)
+        plt.close(fig)
+
+    def _plot_advantage_stats(
+            self,
+            metrics: Dict[str, Any],
+            output_dir: Path,
+    ) -> None:
+        """Plot advantage statistics over training."""
+        advantage_means = metrics.get("advantage_means", [])
+        advantage_stds = metrics.get("advantage_stds", [])
+        if not advantage_means:
+            return
+
+        fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+
+        rollouts = np.arange(1, len(advantage_means) + 1)
+
+        # Advantage mean with std bands
+        ax = axes[0]
+        ax.plot(rollouts, advantage_means, label="Mean", color="blue")
+        if advantage_stds and len(advantage_stds) == len(advantage_means):
+            lower = np.array(advantage_means) - np.array(advantage_stds)
+            upper = np.array(advantage_means) + np.array(advantage_stds)
+            ax.fill_between(rollouts, lower, upper, alpha=0.3, color="blue")
+        ax.axhline(0, color="black", linestyle="--", alpha=0.5)
+        ax.set_xlabel("Rollout")
+        ax.set_ylabel("Advantage")
+        ax.set_title("Advantage Statistics Over Training")
+        ax.grid(True, alpha=0.3)
+
+        # Advantage std over time
+        ax = axes[1]
+        if advantage_stds:
+            ax.plot(rollouts, advantage_stds, color="orange")
+            ax.set_xlabel("Rollout")
+            ax.set_ylabel("Advantage Std")
+            ax.set_title("Advantage Standard Deviation Over Training")
+            ax.grid(True, alpha=0.3)
+
+        fig.tight_layout()
+        fig.savefig(output_dir / "advantage_statistics.png", bbox_inches="tight", dpi=150)
+        plt.close(fig)
+
+    def _plot_reward_distributions(
+            self,
+            metrics: Dict[str, Any],
+            output_dir: Path,
+    ) -> None:
+        """Plot reward distributions."""
+        episode_rewards = metrics.get("episode_rewards", [])
+        per_step_rewards = metrics.get("per_env_rewards", [])
+
+        fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+
+        # Episode reward distribution
+        ax = axes[0]
+        if episode_rewards:
+            ax.hist(episode_rewards, bins=30, edgecolor="black", alpha=0.7, color="steelblue")
+            ax.axvline(np.mean(episode_rewards), color="red", linestyle="--",
+                       label=f"Mean: {np.mean(episode_rewards):.2f}")
+            ax.axvline(np.median(episode_rewards), color="green", linestyle="--",
+                       label=f"Median: {np.median(episode_rewards):.2f}")
+            ax.set_xlabel("Episode Reward")
+            ax.set_ylabel("Frequency")
+            ax.set_title("Episode Reward Distribution")
+            ax.legend()
+
+        # Per-step reward distribution (sampled if too large)
+        ax = axes[1]
+        if per_step_rewards:
+            sample_size = min(10000, len(per_step_rewards))
+            sampled = np.random.choice(per_step_rewards, sample_size, replace=False) if len(
+                per_step_rewards) > sample_size else per_step_rewards
+            ax.hist(sampled, bins=50, edgecolor="black", alpha=0.7, color="coral")
+            ax.set_xlabel("Step Reward")
+            ax.set_ylabel("Frequency")
+            ax.set_title(f"Per-Step Reward Distribution (n={sample_size})")
+
+        # Reward percentiles over training
+        ax = axes[2]
+        if episode_rewards and len(episode_rewards) >= 20:
+            window = max(10, len(episode_rewards) // 20)
+            p25, p50, p75 = [], [], []
+            for i in range(0, len(episode_rewards), window):
+                chunk = episode_rewards[i:i + window]
+                if chunk:
+                    p25.append(np.percentile(chunk, 25))
+                    p50.append(np.percentile(chunk, 50))
+                    p75.append(np.percentile(chunk, 75))
+            x = np.arange(len(p50)) * window
+            ax.fill_between(x, p25, p75, alpha=0.3, label="25-75 percentile")
+            ax.plot(x, p50, label="Median", linewidth=2)
+            ax.set_xlabel("Episode")
+            ax.set_ylabel("Reward")
+            ax.set_title("Reward Percentiles Over Training")
+            ax.legend()
+
+        fig.tight_layout()
+        fig.savefig(output_dir / "reward_distributions.png", bbox_inches="tight", dpi=150)
+        plt.close(fig)
+
+    def _plot_env_state_distributions(
+            self,
+            metrics: Dict[str, Any],
+            output_dir: Path,
+    ) -> None:
+        """Plot environment state distributions observed during training."""
+        battery_states = metrics.get("battery_states", [])
+        buying_prices = metrics.get("buying_prices", [])
+        solar_productions = metrics.get("solar_productions", [])
+        demands = metrics.get("demands", [])
+
+        if not any([battery_states, buying_prices, solar_productions, demands]):
+            return
+
+        fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+
+        # Battery state distribution
+        ax = axes[0, 0]
+        if battery_states:
+            ax.hist(battery_states, bins=30, edgecolor="black", alpha=0.7, color="green")
+            ax.set_xlabel("Battery Energy")
+            ax.set_ylabel("Frequency")
+            ax.set_title("Battery Energy Distribution During Training")
+
+        # Buying price distribution
+        ax = axes[0, 1]
+        if buying_prices:
+            ax.hist(buying_prices, bins=30, edgecolor="black", alpha=0.7, color="red")
+            ax.set_xlabel("Buying Price")
+            ax.set_ylabel("Frequency")
+            ax.set_title("Buying Price Distribution During Training")
+
+        # Solar production distribution
+        ax = axes[1, 0]
+        if solar_productions:
+            ax.hist(solar_productions, bins=30, edgecolor="black", alpha=0.7, color="orange")
+            ax.set_xlabel("Solar Production")
+            ax.set_ylabel("Frequency")
+            ax.set_title("Solar Production Distribution During Training")
+
+        # Demand distribution
+        ax = axes[1, 1]
+        if demands:
+            ax.hist(demands, bins=30, edgecolor="black", alpha=0.7, color="blue")
+            ax.set_xlabel("Demand")
+            ax.set_ylabel("Frequency")
+            ax.set_title("Demand Distribution During Training")
+
+        fig.tight_layout()
+        fig.savefig(output_dir / "environment_state_distributions.png", bbox_inches="tight", dpi=150)
+        plt.close(fig)
+
+    def _plot_ppo_metrics(
+            self,
+            metrics: Dict[str, Any],
+            output_dir: Path,
+    ) -> None:
+        """Plot PPO-specific training metrics."""
+        clip_fractions = metrics.get("clip_fractions", [])
+        explained_variances = metrics.get("explained_variances", [])
+        policy_entropies = metrics.get("policy_entropies", [])
+        learning_rates = metrics.get("learning_rates", [])
+
+        if not any([clip_fractions, explained_variances, policy_entropies, learning_rates]):
+            return
+
+        fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+
+        # Clip fraction
+        ax = axes[0, 0]
+        if clip_fractions:
+            ax.plot(clip_fractions)
+            ax.set_xlabel("Update")
+            ax.set_ylabel("Clip Fraction")
+            ax.set_title("PPO Clip Fraction Over Training")
+            ax.axhline(0.2, color="red", linestyle="--", alpha=0.5, label="Typical threshold")
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+
+        # Explained variance
+        ax = axes[0, 1]
+        if explained_variances:
+            ax.plot(explained_variances)
+            ax.set_xlabel("Update")
+            ax.set_ylabel("Explained Variance")
+            ax.set_title("Value Function Explained Variance")
+            ax.axhline(1.0, color="green", linestyle="--", alpha=0.5, label="Perfect prediction")
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+
+        # Policy entropy
+        ax = axes[1, 0]
+        if policy_entropies:
+            ax.plot(policy_entropies)
+            ax.set_xlabel("Update")
+            ax.set_ylabel("Policy Entropy")
+            ax.set_title("Policy Entropy Over Training (Exploration)")
+            ax.grid(True, alpha=0.3)
+
+        # Learning rate
+        ax = axes[1, 1]
+        if learning_rates:
+            ax.plot(learning_rates)
+            ax.set_xlabel("Update")
+            ax.set_ylabel("Learning Rate")
+            ax.set_title("Learning Rate Schedule")
+            ax.grid(True, alpha=0.3)
+
+        fig.tight_layout()
+        fig.savefig(output_dir / "ppo_training_metrics.png", bbox_inches="tight", dpi=150)
+        plt.close(fig)
+
+    def _plot_training_dashboard(
+            self,
+            metrics: Dict[str, Any],
+            output_dir: Path,
+    ) -> None:
+        """Create a comprehensive training dashboard."""
+        episode_rewards = metrics.get("episode_rewards", [])
+        if not episode_rewards:
+            return
+
+        fig = plt.figure(figsize=(16, 12))
+
+        # Main learning curve
+        ax1 = fig.add_subplot(2, 2, 1)
+        episodes = np.arange(1, len(episode_rewards) + 1)
+        ax1.plot(episodes, episode_rewards, alpha=0.3, color="blue")
+        if len(episode_rewards) >= 50:
+            rolling = pd.Series(episode_rewards).rolling(window=50).mean()
+            ax1.plot(episodes, rolling, color="blue", linewidth=2, label="50-ep moving avg")
+        ax1.set_xlabel("Episode")
+        ax1.set_ylabel("Total Reward")
+        ax1.set_title("Training Progress")
+        ax1.legend()
+        ax1.grid(True, alpha=0.3)
+
+        # Reward distribution comparison (first vs last quarter)
+        ax2 = fig.add_subplot(2, 2, 2)
+        if len(episode_rewards) >= 20:
+            quarter = len(episode_rewards) // 4
+            first_quarter = episode_rewards[:quarter]
+            last_quarter = episode_rewards[-quarter:]
+            ax2.hist(first_quarter, bins=20, alpha=0.5, label=f"First {quarter} episodes", color="red")
+            ax2.hist(last_quarter, bins=20, alpha=0.5, label=f"Last {quarter} episodes", color="green")
+            ax2.axvline(np.mean(first_quarter), color="red", linestyle="--")
+            ax2.axvline(np.mean(last_quarter), color="green", linestyle="--")
+            ax2.set_xlabel("Episode Reward")
+            ax2.set_ylabel("Frequency")
+            ax2.set_title("Reward Distribution: Early vs Late Training")
+            ax2.legend()
+
+        # Value estimates if available
+        ax3 = fig.add_subplot(2, 2, 3)
+        value_estimates = metrics.get("value_estimates", [])
+        if value_estimates:
+            ax3.plot(value_estimates, color="purple")
+            ax3.set_xlabel("Rollout")
+            ax3.set_ylabel("Mean Value Estimate")
+            ax3.set_title("Value Function Learning")
+            ax3.grid(True, alpha=0.3)
+
+        # Summary statistics
+        ax4 = fig.add_subplot(2, 2, 4)
+        ax4.axis("off")
+        stats_text = [
+            f"Total Episodes: {len(episode_rewards)}",
+            f"Mean Reward: {np.mean(episode_rewards):.2f}",
+            f"Std Reward: {np.std(episode_rewards):.2f}",
+            f"Min Reward: {np.min(episode_rewards):.2f}",
+            f"Max Reward: {np.max(episode_rewards):.2f}",
+        ]
+        if len(episode_rewards) >= 20:
+            first_10 = np.mean(episode_rewards[:10])
+            last_10 = np.mean(episode_rewards[-10:])
+            improvement = last_10 - first_10
+            stats_text.extend([
+                "",
+                f"First 10 Mean: {first_10:.2f}",
+                f"Last 10 Mean: {last_10:.2f}",
+                f"Improvement: {improvement:+.2f}",
+            ])
+        ax4.text(0.1, 0.9, "\n".join(stats_text), transform=ax4.transAxes,
+                 fontsize=12, verticalalignment="top", fontfamily="monospace",
+                 bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.5))
+        ax4.set_title("Training Summary Statistics")
+
+        fig.tight_layout()
+        fig.savefig(output_dir / "training_dashboard.png", bbox_inches="tight", dpi=150)
+        plt.close(fig)
+
+    def plot_agent_vs_baseline_analysis(
+            self,
+            agent_step_frame: pd.DataFrame,
+            baseline_step_frame: pd.DataFrame,
+            output_dir: Path,
+    ) -> None:
+        """Create detailed comparison plots between agent and baseline."""
+        if agent_step_frame.empty or baseline_step_frame.empty:
+            return
+
+        self.apply_style()
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        fig, axes = plt.subplots(3, 2, figsize=(14, 15))
+
+        # Reward comparison by hour
+        ax = axes[0, 0]
+        if "time_of_day" in agent_step_frame.columns and "reward" in agent_step_frame.columns:
+            agent_by_hour = agent_step_frame.groupby("time_of_day")["reward"].mean()
+            baseline_by_hour = baseline_step_frame.groupby("time_of_day")["reward"].mean()
+            hours = np.arange(24)
+            width = 0.35
+            ax.bar(hours - width / 2, agent_by_hour.reindex(hours, fill_value=0), width, label="Agent", alpha=0.8)
+            ax.bar(hours + width / 2, baseline_by_hour.reindex(hours, fill_value=0), width, label="Baseline", alpha=0.8)
+            ax.set_xlabel("Hour of Day")
+            ax.set_ylabel("Mean Reward")
+            ax.set_title("Reward by Hour of Day")
+            ax.legend()
+            ax.set_xticks(hours[::2])
+
+        # Battery usage comparison
+        ax = axes[0, 1]
+        if "battery_energy" in agent_step_frame.columns:
+            ax.hist(agent_step_frame["battery_energy"], bins=20, alpha=0.5, label="Agent", color="blue")
+            ax.hist(baseline_step_frame["battery_energy"], bins=20, alpha=0.5, label="Baseline", color="orange")
+            ax.set_xlabel("Battery Energy")
+            ax.set_ylabel("Frequency")
+            ax.set_title("Battery Energy Distribution")
+            ax.legend()
+
+        # Solar utilization comparison
+        ax = axes[1, 0]
+        if all(col in agent_step_frame.columns for col in ["solar_to_demand", "solar_to_battery", "solar_sold"]):
+            agent_solar_used = agent_step_frame["solar_to_demand"].sum() + agent_step_frame["solar_to_battery"].sum()
+            agent_solar_total = agent_solar_used + agent_step_frame["solar_sold"].sum()
+            baseline_solar_used = baseline_step_frame["solar_to_demand"].sum() + baseline_step_frame[
+                "solar_to_battery"].sum()
+            baseline_solar_total = baseline_solar_used + baseline_step_frame["solar_sold"].sum()
+
+            categories = ["Used\n(demand+battery)", "Sold"]
+            agent_vals = [agent_solar_used, agent_step_frame["solar_sold"].sum()]
+            baseline_vals = [baseline_solar_used, baseline_step_frame["solar_sold"].sum()]
+
+            x = np.arange(len(categories))
+            width = 0.35
+            ax.bar(x - width / 2, agent_vals, width, label="Agent")
+            ax.bar(x + width / 2, baseline_vals, width, label="Baseline")
+            ax.set_ylabel("Energy Units")
+            ax.set_title("Solar Energy Allocation")
+            ax.set_xticks(x)
+            ax.set_xticklabels(categories)
+            ax.legend()
+
+        # Grid interaction comparison
+        ax = axes[1, 1]
+        if all(col in agent_step_frame.columns for col in ["grid_to_battery", "grid_to_demand"]):
+            categories = ["Grid→Battery", "Grid→Demand", "Battery→Grid"]
+            agent_vals = [
+                agent_step_frame["grid_to_battery"].sum(),
+                agent_step_frame["grid_to_demand"].sum(),
+                agent_step_frame.get("battery_to_grid", pd.Series([0])).sum()
+            ]
+            baseline_vals = [
+                baseline_step_frame["grid_to_battery"].sum(),
+                baseline_step_frame["grid_to_demand"].sum(),
+                baseline_step_frame.get("battery_to_grid", pd.Series([0])).sum()
+            ]
+
+            x = np.arange(len(categories))
+            width = 0.35
+            ax.bar(x - width / 2, agent_vals, width, label="Agent")
+            ax.bar(x + width / 2, baseline_vals, width, label="Baseline")
+            ax.set_ylabel("Energy Units")
+            ax.set_title("Grid Interaction")
+            ax.set_xticks(x)
+            ax.set_xticklabels(categories)
+            ax.legend()
+
+        # Cumulative reward comparison
+        ax = axes[2, 0]
+        if "reward" in agent_step_frame.columns:
+            agent_cumulative = agent_step_frame["reward"].cumsum()
+            baseline_cumulative = baseline_step_frame["reward"].cumsum()
+            ax.plot(agent_cumulative.values, label="Agent")
+            ax.plot(baseline_cumulative.values, label="Baseline")
+            ax.set_xlabel("Step")
+            ax.set_ylabel("Cumulative Reward")
+            ax.set_title("Cumulative Reward Over Episode")
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+
+        # Action distribution comparison
+        ax = axes[2, 1]
+        action_cols = ["solar_to_demand", "solar_to_battery", "battery_to_demand", "battery_to_grid", "grid_to_battery"]
+        if all(col in agent_step_frame.columns for col in action_cols):
+            agent_actions = [agent_step_frame[col].mean() for col in action_cols]
+            baseline_actions = [baseline_step_frame[col].mean() for col in action_cols]
+
+            x = np.arange(len(action_cols))
+            width = 0.35
+            ax.bar(x - width / 2, agent_actions, width, label="Agent")
+            ax.bar(x + width / 2, baseline_actions, width, label="Baseline")
+            ax.set_ylabel("Mean Action Value")
+            ax.set_title("Mean Action Values")
+            ax.set_xticks(x)
+            ax.set_xticklabels([col.replace("_", "\n") for col in action_cols], fontsize=8)
+            ax.legend()
+
+        fig.tight_layout()
+        fig.savefig(output_dir / "agent_vs_baseline_analysis.png", bbox_inches="tight", dpi=150)
         plt.close(fig)

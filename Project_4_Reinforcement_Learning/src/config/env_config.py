@@ -95,7 +95,7 @@ class EnvironmentConfig:
     selling_price_multiplier: float = 0.9
     selling_price_offset: float = 0.05
     trade_fee_per_unit: float = 0.02
-    persist_battery_state: bool = True
+    persist_battery_state: bool = False  # False for single-day training (each episode independent)
     randomize_start_day: bool = True
     year_length_days: int = 365
     seasonal_solar_amplitude: float = 0.35
@@ -105,7 +105,17 @@ class EnvironmentConfig:
     daylight_variability: float = 0.2
 
     # Reward shaping parameters (optional bonuses to improve learning signal)
+    # These are tuned to provide a strong learning signal to help the agent learn quickly
     enable_reward_shaping: bool = True
-    solar_utilization_bonus: float = 0.1  # Bonus per unit of solar used (not wasted)
-    battery_health_bonus: float = 0.05  # Bonus for maintaining battery health
+    solar_utilization_bonus: float = 0.5  # Strong bonus per unit of solar used (encourages solar usage)
+    battery_health_bonus: float = 0.2  # Bonus for maintaining battery health (scaled by health 0-1)
     demand_coverage_penalty: float = 0.0  # Additional penalty for unmet demand (beyond grid cost)
+
+    # Additional reward shaping for improved learning
+    low_price_charging_bonus: float = 0.3  # Strong bonus for charging when price is below threshold
+    high_price_selling_bonus: float = 0.4  # Strong bonus for selling/discharging when price is high
+    price_threshold_low: float = 1.2  # Price below which charging is "smart"
+    price_threshold_high: float = 1.3  # Price above which selling/discharging is "smart"
+
+    # Reduce degradation penalty for faster learning
+    battery_degradation_penalty_scale: float = 1.0  # Scale factor for degradation penalty (lower = less penalty)

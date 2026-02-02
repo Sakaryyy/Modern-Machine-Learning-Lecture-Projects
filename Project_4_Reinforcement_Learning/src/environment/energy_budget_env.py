@@ -389,6 +389,14 @@ class EnergyBudgetEnv(gym.Env):
             # Bonus for maintaining good battery health
             balance += self._battery_health * self.config.battery_health_bonus
 
+            # Smart charging bonus: reward charging when price is low
+            if buying_price < self.config.price_threshold_low:
+                balance += (grid_to_battery + solar_to_battery) * self.config.low_price_charging_bonus
+
+            # Smart selling/discharging bonus: reward selling/discharging when price is high
+            if buying_price > self.config.price_threshold_high:
+                balance += (battery_to_grid_used + discharge_used) * self.config.high_price_selling_bonus
+
         metrics = StepMetrics(
             time_step=self._time_step,
             time_of_day=time_of_day,
