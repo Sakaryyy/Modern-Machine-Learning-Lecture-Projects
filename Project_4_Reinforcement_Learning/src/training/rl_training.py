@@ -76,16 +76,16 @@ class AgentTrainingConfig:
         Whether to show tqdm progress bars for training and evaluation.
     """
 
-    total_timesteps: int = 200_000
-    n_envs: int = 10
-    eval_episodes: int = 20
+    total_timesteps: int = 100_000  # Reduced for faster iteration on single-day episodes
+    n_envs: int = 8  # 8 parallel envs for good sample efficiency
+    eval_episodes: int = 30  # More episodes for statistically significant evaluation
     seed: int | None = None
     algorithm: str = RECOMMENDED_ALGORITHM
-    generations: int = 10
+    generations: int = 5  # Fewer generations since each generation continues from best
     ppo_hyperparameters: Mapping[str, Any] = field(default_factory=dict)
     use_action_masking: bool = True
     use_vec_normalize: bool = True
-    normalize_reward: bool = True
+    normalize_reward: bool = True  # Reward normalization helps with varying reward scales
     resume_best_model: bool = True
     tensorboard_log: bool = True
     show_progress: bool = True
@@ -302,6 +302,171 @@ class TrainingProgressCallback(BaseCallback):
             self._progress = None
 
 
+class DetailedTrainingDiagnosticsCallback(BaseCallback):
+    """Comprehensive diagnostics callback that tracks detailed training metrics.
+
+    This callback records:
+    - Episode rewards and lengths
+    - Value function estimates
+    - Policy entropy (exploration)
+    - Action distributions
+    - Advantage estimates
+    - Learning rate schedules
+    - Gradient norms
+    - Environment-specific metrics (battery, solar, price)
+    """
+
+    def __init__(self, log_interval: int = 100) -> None:
+        super().__init__()
+        self._log_interval = log_interval
+        self._episode_rewards: List[float] = []
+        self._episode_lengths: List[int] = []
+        self._value_estimates: List[float] = []
+        self._policy_entropies: List[float] = []
+        self._advantage_means: List[float] = []
+        self._advantage_stds: List[float] = []
+        self._learning_rates: List[float] = []
+        self._clip_fractions: List[float] = []
+        self._explained_variances: List[float] = []
+        self._timesteps: List[int] = []
+        self._action_distributions: List[Dict[str, float]] = []
+        self._reward_components: List[Dict[str, float]] = []
+        self._battery_states: List[float] = []
+        self._buying_prices: List[float] = []
+        self._solar_productions: List[float] = []
+        self._demands: List[float] = []
+        self._per_env_rewards: List[float] = []
+        self._steps_since_log = 0
+
+    def _on_step(self) -> bool:
+        """Record metrics at each step."""
+        self._steps_since_log += 1
+
+        # Record environment-specific metrics from observations
+        if hasattr(self.locals, 'obs_tensor') or 'new_obs' in self.locals:
+            obs = self.locals.get('new_obs', self.locals.get('obs_tensor'))
+            if obs is not None:
+                obs_arr = np.asarray(obs)
+                if len(obs_arr.shape) > 1 and obs_arr.shape[1] >= 9:
+                    # Extract battery energy (index 3), buying price (index 2), etc.
+                    self._battery_states.append(float(np.mean(obs_arr[:, 3])))
+                    self._buying_prices.append(float(np.mean(obs_arr[:, 2])))
+                    self._solar_productions.append(float(np.mean(obs_arr[:, 7])))
+                    self._demands.append(float(np.mean(obs_arr[:, 8])))
+
+        # Record rewards
+        rewards = self.locals.get('rewards', [])
+        if len(rewards) > 0:
+            self._per_env_rewards.extend([float(r) for r in rewards])
+
+        # Track episode completions
+        infos = self.locals.get("infos", [])
+        for info in infos:
+            episode_info = info.get("episode")
+            if episode_info is not None:
+                self._episode_rewards.append(float(episode_info.get("r", 0.0)))
+                self._episode_lengths.append(int(episode_info.get("l", 0)))
+
+        # Record PPO-specific metrics periodically
+        if self._steps_since_log >= self._log_interval:
+            self._record_ppo_metrics()
+            self._steps_since_log = 0
+
+        return True
+
+    def _record_ppo_metrics(self) -> None:
+        """Record PPO algorithm-specific metrics."""
+        self._timesteps.append(self.num_timesteps)
+
+        # Try to get learning rate
+        if hasattr(self.model, 'lr_schedule'):
+            lr = self.model.lr_schedule(1.0)
+            self._learning_rates.append(float(lr))
+
+        # Get logger metrics if available
+        if hasattr(self, 'logger') and self.logger is not None:
+            name_to_value = getattr(self.logger, 'name_to_value', {})
+            if 'train/clip_fraction' in name_to_value:
+                self._clip_fractions.append(float(name_to_value['train/clip_fraction']))
+            if 'train/explained_variance' in name_to_value:
+                self._explained_variances.append(float(name_to_value['train/explained_variance']))
+            if 'train/entropy_loss' in name_to_value:
+                self._policy_entropies.append(float(-name_to_value['train/entropy_loss']))
+
+    def _on_rollout_end(self) -> None:
+        """Record metrics at the end of each rollout."""
+        # Access rollout buffer if available
+        if hasattr(self.model, 'rollout_buffer'):
+            buffer = self.model.rollout_buffer
+            if hasattr(buffer, 'values') and buffer.values is not None:
+                values = buffer.values.flatten()
+                self._value_estimates.append(float(np.mean(values)))
+            if hasattr(buffer, 'advantages') and buffer.advantages is not None:
+                advantages = buffer.advantages.flatten()
+                self._advantage_means.append(float(np.mean(advantages)))
+                self._advantage_stds.append(float(np.std(advantages)))
+
+    def to_dataframe(self) -> pd.DataFrame:
+        """Convert training diagnostics to a DataFrame."""
+        # Episode-level metrics
+        episode_data = {
+            "episode": np.arange(1, len(self._episode_rewards) + 1),
+            "total_reward": self._episode_rewards,
+            "episode_length": self._episode_lengths,
+        }
+        if self._episode_rewards:
+            episode_data["avg_reward"] = pd.Series(self._episode_rewards).expanding().mean().tolist()
+            episode_data["reward_std"] = pd.Series(self._episode_rewards).expanding().std().tolist()
+
+        return pd.DataFrame(episode_data)
+
+    def get_detailed_metrics(self) -> Dict[str, Any]:
+        """Return all collected metrics as a dictionary."""
+        return {
+            "episode_rewards": self._episode_rewards,
+            "episode_lengths": self._episode_lengths,
+            "value_estimates": self._value_estimates,
+            "policy_entropies": self._policy_entropies,
+            "advantage_means": self._advantage_means,
+            "advantage_stds": self._advantage_stds,
+            "learning_rates": self._learning_rates,
+            "clip_fractions": self._clip_fractions,
+            "explained_variances": self._explained_variances,
+            "timesteps": self._timesteps,
+            "battery_states": self._battery_states,
+            "buying_prices": self._buying_prices,
+            "solar_productions": self._solar_productions,
+            "demands": self._demands,
+            "per_env_rewards": self._per_env_rewards,
+        }
+
+    def get_training_summary(self) -> Dict[str, float]:
+        """Return a summary of training statistics."""
+        summary = {}
+        if self._episode_rewards:
+            rewards = np.array(self._episode_rewards)
+            summary["mean_episode_reward"] = float(np.mean(rewards))
+            summary["std_episode_reward"] = float(np.std(rewards))
+            summary["min_episode_reward"] = float(np.min(rewards))
+            summary["max_episode_reward"] = float(np.max(rewards))
+            # Compute improvement over training
+            if len(rewards) >= 10:
+                first_10_mean = float(np.mean(rewards[:10]))
+                last_10_mean = float(np.mean(rewards[-10:]))
+                summary["reward_improvement"] = last_10_mean - first_10_mean
+                summary["first_10_mean"] = first_10_mean
+                summary["last_10_mean"] = last_10_mean
+        if self._value_estimates:
+            summary["mean_value_estimate"] = float(np.mean(self._value_estimates))
+        if self._advantage_means:
+            summary["mean_advantage"] = float(np.mean(self._advantage_means))
+        if self._policy_entropies:
+            summary["mean_entropy"] = float(np.mean(self._policy_entropies))
+            if len(self._policy_entropies) >= 2:
+                summary["entropy_change"] = float(self._policy_entropies[-1] - self._policy_entropies[0])
+        return summary
+
+
 def default_hyperparameter_grid() -> Dict[str, Sequence[Any]]:
     """Provide a curated PPO hyperparameter grid for the environment.
 
@@ -327,7 +492,7 @@ def default_hyperparameter_grid() -> Dict[str, Sequence[Any]]:
 
 
 def default_ppo_hyperparameters() -> Dict[str, Any]:
-    """Provide a curated PPO hyperparameter set for the refined environment.
+    """Provide a curated PPO hyperparameter set optimized for single-day (24-step) episodes.
 
     Returns
     -------
@@ -336,29 +501,30 @@ def default_ppo_hyperparameters() -> Dict[str, Any]:
 
     Notes
     -----
-    Key optimizations:
-    - learning_rate: 3e-4 is more stable than 1e-3 for PPO
-    - ent_coef: 0.02 encourages more exploration in the large action space
-    - n_steps: 2048 allows for better advantage estimation
-    - batch_size: 128 for more frequent updates
-    - gamma: 0.99 is suitable for 24-hour episodes; for longer episodes,
-      use compute_gamma_for_horizon() to adjust appropriately
-    - policy_kwargs: Larger networks for the complex action space
+    Optimizations for single-day (24-step) episodes:
+    - learning_rate: 5e-4 - slightly higher for faster convergence on short episodes
+    - gamma: 0.95 - appropriate discount for 24-step episodes (0.95^24 ≈ 0.29)
+    - gae_lambda: 0.92 - balanced for short-horizon advantage estimation
+    - ent_coef: 0.05 - higher entropy for better exploration in large action space
+    - n_steps: 480 - multiple complete episodes (480 = 24 * 20 episodes per batch)
+    - batch_size: 64 - smaller batches for more frequent updates
+    - n_epochs: 15 - more epochs to extract learning from each batch
+    - Larger networks with layer normalization for stability
     """
 
     return {
-        "learning_rate": 3e-4,  # More stable than 1e-3
-        "gamma": 0.99,  # Suitable for 24-hour episodes
-        "gae_lambda": 0.95,  # Higher for better advantage estimation
-        "ent_coef": 0.02,  # More exploration for complex action space
-        "clip_range": 0.2,
-        "n_steps": 2048,  # More samples before update
-        "batch_size": 128,  # More frequent gradient updates
-        "vf_coef": 0.5,
-        "max_grad_norm": 0.5,
-        "normalize_advantage": True,
-        "n_epochs": 10,  # More epochs per update
-        # Larger network for complex MultiDiscrete action space (12x12x11x11x11 = 191,664 actions)
+        "learning_rate": 5e-4,  # Higher for faster convergence on short episodes
+        "gamma": 0.95,  # Appropriate for 24-step episodes (end reward = 29% of immediate)
+        "gae_lambda": 0.92,  # Tuned for short-horizon advantage estimation
+        "ent_coef": 0.05,  # Higher entropy for large action space exploration
+        "clip_range": 0.2,  # Standard PPO clipping
+        "n_steps": 480,  # 20 complete 24-step episodes per update
+        "batch_size": 64,  # Smaller batches for more gradient updates
+        "vf_coef": 0.5,  # Standard value function coefficient
+        "max_grad_norm": 0.5,  # Standard gradient clipping
+        "normalize_advantage": True,  # Normalize advantages for stability
+        "n_epochs": 15,  # More epochs to extract learning from each batch
+        # Network architecture optimized for the environment complexity
         "policy_kwargs": {
             "net_arch": {
                 "pi": [256, 256, 128],  # Policy network: deeper for action complexity
@@ -759,16 +925,35 @@ def _iterate_with_progress(
 def _build_training_callbacks(
         total_timesteps: int,
         show_progress: bool,
+        include_detailed_diagnostics: bool = True,
 ) -> BaseCallback:
-    reward_callback = EpisodeRewardCallback()
-    if not show_progress:
-        return reward_callback
-    return CallbackList(
-        [
-            reward_callback,
-            TrainingProgressCallback(total_timesteps=total_timesteps),
-        ]
-    )
+    """Build training callbacks including reward tracking and optional diagnostics.
+
+    Parameters
+    ----------
+    total_timesteps:
+        Total timesteps for training (used for progress bar).
+    show_progress:
+        Whether to show progress bars.
+    include_detailed_diagnostics:
+        Whether to include the detailed diagnostics callback.
+
+    Returns
+    -------
+    BaseCallback
+        Callback or CallbackList to use during training.
+    """
+    callbacks = [EpisodeRewardCallback()]
+
+    if include_detailed_diagnostics:
+        callbacks.append(DetailedTrainingDiagnosticsCallback(log_interval=100))
+
+    if show_progress:
+        callbacks.append(TrainingProgressCallback(total_timesteps=total_timesteps))
+
+    if len(callbacks) == 1:
+        return callbacks[0]
+    return CallbackList(callbacks)
 
 
 def _summarize_strategy(step_frame: pd.DataFrame) -> Dict[str, float]:
@@ -1405,6 +1590,28 @@ def run_training(
     if not sweep_frame.empty:
         plotter.plot_generation_summary(sweep_frame, output_dir=run_metadata.root_dir / "plots")
 
+    # Extract and save detailed training diagnostics from the last generation callback
+    detailed_metrics = None
+    training_summary = None
+    if isinstance(callback, CallbackList):
+        for cb in callback.callbacks:
+            if isinstance(cb, DetailedTrainingDiagnosticsCallback):
+                detailed_metrics = cb.get_detailed_metrics()
+                training_summary = cb.get_training_summary()
+                break
+    elif isinstance(callback, DetailedTrainingDiagnosticsCallback):
+        detailed_metrics = callback.get_detailed_metrics()
+        training_summary = callback.get_training_summary()
+
+    if detailed_metrics:
+        artifact_manager.save_json(detailed_metrics, filename="detailed_training_metrics.json", subdir="data")
+        plotter.plot_detailed_training_diagnostics(detailed_metrics, output_dir=run_metadata.root_dir / "plots")
+        logger.info("Saved detailed training diagnostics and plots.")
+
+    if training_summary:
+        artifact_manager.save_json(training_summary, filename="training_summary_stats.json", subdir="data")
+        logger.info("Training summary: %s", training_summary)
+
     if best_model is None:
         raise RuntimeError("No valid model was trained during the generation loop.")
 
@@ -1456,6 +1663,14 @@ def run_training(
         baseline_summary_frame,
         output_dir=run_metadata.root_dir / "plots",
     )
+
+    # Detailed agent vs baseline comparison plot
+    if not agent_step_frame.empty and not baseline_step_frame.empty:
+        plotter.plot_agent_vs_baseline_analysis(
+            agent_step_frame[agent_step_frame["episode"] == 1],
+            baseline_step_frame[baseline_step_frame["episode"] == 1],
+            output_dir=run_metadata.root_dir / "plots",
+        )
 
     agent_strategy = _summarize_strategy(agent_step_frame)
     baseline_strategy = _summarize_strategy(baseline_step_frame)

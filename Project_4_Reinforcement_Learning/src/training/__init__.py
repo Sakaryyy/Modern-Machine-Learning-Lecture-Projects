@@ -7,7 +7,9 @@ from .rl_training import (
     TrainingSummary,
     TrainingSummaryHyperparameter,
     run_training_sweep,
-    run_training
+    run_training,
+    long_horizon_ppo_hyperparameters,
+    DetailedTrainingDiagnosticsCallback,
 )
 
 __all__ = [
@@ -17,5 +19,7 @@ __all__ = [
     "TrainingSummary",
     "TrainingSummaryHyperparameter",
     "run_training_sweep",
-    "run_training"
+    "run_training",
+    "long_horizon_ppo_hyperparameters",
+    "DetailedTrainingDiagnosticsCallback",
 ]

@@ -182,8 +182,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--total-timesteps",
         type=int,
-        default=200_000,
-        help="Total training timesteps for RL mode.",
+        default=100_000,
+        help="Total training timesteps for RL mode (default: 100k for single-day training).",
     )
     parser.add_argument(
         "--n-envs",
@@ -206,8 +206,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--generations",
         type=int,
-        default=100,
-        help="Number of independent training generations.",
+        default=5,
+        help="Number of independent training generations (default: 5 for single-day training).",
     )
     parser.add_argument(
         "--max-configs",
@@ -251,7 +251,7 @@ def parse_args() -> argparse.Namespace:
         use_vec_normalize=True,
         resume_best_model=True,
         tensorboard_log=True,
-        persist_battery_state=True,
+        persist_battery_state=False,  # False for single-day training (each episode is independent)
     )
     return parser.parse_args()
 
