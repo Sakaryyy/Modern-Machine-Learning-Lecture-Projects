@@ -10,6 +10,7 @@ from .rl_training import (
     run_training,
     long_horizon_ppo_hyperparameters,
     DetailedTrainingDiagnosticsCallback,
+    focused_hyperparameter_grid,
 )
 
 __all__ = [
@@ -22,4 +23,5 @@ __all__ = [
     "run_training",
     "long_horizon_ppo_hyperparameters",
     "DetailedTrainingDiagnosticsCallback",
+    "focused_hyperparameter_grid",
 ]

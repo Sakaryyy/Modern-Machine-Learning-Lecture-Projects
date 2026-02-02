@@ -77,7 +77,7 @@ class EnvironmentConfig:
     max_solar_power: int = 11
     base_price: float = 1.0
     selling_price: float = 1.0
-    episode_length: int = 24
+    episode_length: int = 120  # 5 days (120 hours) for better variation exposure
     forecast_horizon: int = 3
     forecast_noise_std: float = 0.15
     buying_price_clip: float = 10.0

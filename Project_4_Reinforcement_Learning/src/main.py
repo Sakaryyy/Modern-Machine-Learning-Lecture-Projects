@@ -131,12 +131,12 @@ def parse_args() -> argparse.Namespace:
         default="baseline",
         help="Execution mode.",
     )
-    parser.add_argument("--steps", type=int, default=24, help="Number of steps to run.")
+    parser.add_argument("--steps", type=int, default=120, help="Number of steps to run (default: 120 for 5-day episodes).")
     parser.add_argument(
         "--episode-length",
         type=int,
-        default=24,
-        help="Episode length in hours (default: 24).",
+        default=120,
+        help="Episode length in hours (default: 120 = 5 days for varied conditions).",
     )
     parser.add_argument(
         "--long-horizon-days",

@@ -1066,3 +1066,266 @@ class RLPlotter:
         fig.tight_layout()
         fig.savefig(output_dir / "agent_vs_baseline_analysis.png", bbox_inches="tight", dpi=150)
         plt.close(fig)
+
+    def plot_multiday_agent_behavior(
+            self,
+            step_frame: pd.DataFrame,
+            output_dir: Path,
+            policy_name: str = "Agent",
+    ) -> None:
+        """Visualize agent behavior over a multi-day episode.
+
+        This plot shows how the trained agent manages energy over multiple days,
+        displaying battery state, solar production, demand, prices, and actions.
+
+        Parameters
+        ----------
+        step_frame:
+            DataFrame containing step-level data from evaluation.
+        output_dir:
+            Directory where plots should be saved.
+        policy_name:
+            Name of the policy for plot titles (e.g., "PPO Agent", "Baseline").
+        """
+        if step_frame.empty:
+            return
+
+        self.apply_style()
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Determine number of days
+        n_steps = len(step_frame)
+        n_days = max(1, n_steps // 24)
+
+        fig, axes = plt.subplots(5, 1, figsize=(16, 20), sharex=True)
+
+        x = np.arange(n_steps)
+        day_boundaries = [i * 24 for i in range(n_days + 1) if i * 24 <= n_steps]
+
+        # 1. Battery State
+        ax = axes[0]
+        if "battery_energy" in step_frame.columns:
+            ax.plot(x, step_frame["battery_energy"], label="Battery Energy", color="green", linewidth=1.5)
+            if "battery_capacity" in step_frame.columns:
+                ax.plot(x, step_frame["battery_capacity"], label="Capacity", color="darkgreen",
+                        linestyle="--", alpha=0.7)
+            ax.fill_between(x, 0, step_frame["battery_energy"], alpha=0.3, color="green")
+            for boundary in day_boundaries[1:-1]:
+                ax.axvline(boundary, color="gray", linestyle=":", alpha=0.5)
+            ax.set_ylabel("Energy Units")
+            ax.set_title(f"{policy_name}: Battery State Over {n_days} Days")
+            ax.legend(loc="upper right")
+            ax.grid(True, alpha=0.3)
+
+        # 2. Solar Production and Demand
+        ax = axes[1]
+        if "solar_production" in step_frame.columns:
+            ax.plot(x, step_frame["solar_production"], label="Solar Production", color="orange", linewidth=1.5)
+        if "demand" in step_frame.columns:
+            ax.plot(x, step_frame["demand"], label="Demand", color="red", linewidth=1.5)
+        for boundary in day_boundaries[1:-1]:
+            ax.axvline(boundary, color="gray", linestyle=":", alpha=0.5)
+        ax.set_ylabel("Energy Units")
+        ax.set_title("Solar Production and Demand")
+        ax.legend(loc="upper right")
+        ax.grid(True, alpha=0.3)
+
+        # 3. Prices
+        ax = axes[2]
+        if "buying_price" in step_frame.columns:
+            ax.plot(x, step_frame["buying_price"], label="Buying Price", color="blue", linewidth=1.5)
+        if "selling_price" in step_frame.columns:
+            ax.plot(x, step_frame["selling_price"], label="Selling Price", color="purple", linewidth=1.5)
+        for boundary in day_boundaries[1:-1]:
+            ax.axvline(boundary, color="gray", linestyle=":", alpha=0.5)
+        ax.set_ylabel("Price")
+        ax.set_title("Market Prices")
+        ax.legend(loc="upper right")
+        ax.grid(True, alpha=0.3)
+
+        # 4. Energy Flow Actions
+        ax = axes[3]
+        action_cols = ["solar_to_demand", "solar_to_battery", "battery_to_demand", "battery_to_grid", "grid_to_battery"]
+        colors = ["gold", "orange", "lightgreen", "cyan", "lightblue"]
+        available_cols = [col for col in action_cols if col in step_frame.columns]
+        if available_cols:
+            bottom = np.zeros(n_steps)
+            for col, color in zip(available_cols, colors[:len(available_cols)]):
+                ax.bar(x, step_frame[col], bottom=bottom, width=1.0, label=col.replace("_", " ").title(),
+                       color=color, edgecolor="none")
+                bottom += step_frame[col].values
+        for boundary in day_boundaries[1:-1]:
+            ax.axvline(boundary, color="gray", linestyle=":", alpha=0.5)
+        ax.set_ylabel("Energy Units")
+        ax.set_title("Energy Flow Actions")
+        ax.legend(loc="upper right", fontsize=8)
+        ax.grid(True, alpha=0.3, axis="y")
+
+        # 5. Cumulative Reward
+        ax = axes[4]
+        if "reward" in step_frame.columns:
+            cumulative_reward = step_frame["reward"].cumsum()
+            ax.plot(x, cumulative_reward, color="purple", linewidth=2)
+            ax.fill_between(x, 0, cumulative_reward, alpha=0.3, color="purple")
+            for boundary in day_boundaries[1:-1]:
+                ax.axvline(boundary, color="gray", linestyle=":", alpha=0.5)
+            # Add daily rewards text
+            for i in range(n_days):
+                start, end = i * 24, min((i + 1) * 24, n_steps)
+                daily_reward = step_frame["reward"].iloc[start:end].sum()
+                ax.annotate(f"Day {i + 1}: {daily_reward:.1f}",
+                            xy=((start + end) / 2, cumulative_reward.iloc[end - 1]),
+                            fontsize=8, ha="center")
+        ax.set_xlabel("Hour")
+        ax.set_ylabel("Cumulative Reward")
+        ax.set_title("Cumulative Reward Over Episode")
+        ax.grid(True, alpha=0.3)
+
+        # Add day labels on x-axis
+        day_ticks = [(i * 24 + 12) for i in range(n_days) if i * 24 + 12 < n_steps]
+        ax.set_xticks(day_ticks)
+        ax.set_xticklabels([f"Day {i + 1}" for i in range(len(day_ticks))])
+
+        fig.suptitle(f"{policy_name} Behavior Over {n_days}-Day Episode", fontsize=14, fontweight="bold")
+        fig.tight_layout(rect=[0, 0, 1, 0.98])
+        filename = f"multiday_behavior_{policy_name.lower().replace(' ', '_')}.png"
+        fig.savefig(output_dir / filename, bbox_inches="tight", dpi=150)
+        plt.close(fig)
+
+    def plot_episode_return_distribution(
+            self,
+            agent_rewards: List[float],
+            baseline_rewards: List[float],
+            output_dir: Path,
+            agent_name: str = "PPO Agent",
+    ) -> None:
+        """Plot episode return distribution comparison between agent and baseline.
+
+        This creates a statistical comparison showing:
+        - Histograms of episode returns
+        - Box plots with individual data points
+        - Statistical summary (mean, std, improvement)
+
+        Parameters
+        ----------
+        agent_rewards:
+            List of total episode rewards for the trained agent.
+        baseline_rewards:
+            List of total episode rewards for the baseline policy.
+        output_dir:
+            Directory where plots should be saved.
+        agent_name:
+            Name of the trained agent for labels.
+        """
+        if not agent_rewards or not baseline_rewards:
+            return
+
+        self.apply_style()
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        fig, axes = plt.subplots(2, 2, figsize=(14, 12))
+
+        agent_arr = np.array(agent_rewards)
+        baseline_arr = np.array(baseline_rewards)
+
+        # 1. Overlapping Histograms
+        ax = axes[0, 0]
+        bins = np.linspace(
+            min(agent_arr.min(), baseline_arr.min()),
+            max(agent_arr.max(), baseline_arr.max()),
+            30
+        )
+        ax.hist(baseline_arr, bins=bins, alpha=0.6, label="Baseline", color="orange", edgecolor="darkorange")
+        ax.hist(agent_arr, bins=bins, alpha=0.6, label=agent_name, color="blue", edgecolor="darkblue")
+        ax.axvline(baseline_arr.mean(), color="darkorange", linestyle="--", linewidth=2,
+                   label=f"Baseline Mean: {baseline_arr.mean():.2f}")
+        ax.axvline(agent_arr.mean(), color="darkblue", linestyle="--", linewidth=2,
+                   label=f"{agent_name} Mean: {agent_arr.mean():.2f}")
+        ax.set_xlabel("Episode Return")
+        ax.set_ylabel("Frequency")
+        ax.set_title("Episode Return Distribution")
+        ax.legend(fontsize=9)
+        ax.grid(True, alpha=0.3)
+
+        # 2. Box Plot with Strip Plot
+        ax = axes[0, 1]
+        data = pd.DataFrame({
+            "Return": np.concatenate([baseline_arr, agent_arr]),
+            "Policy": ["Baseline"] * len(baseline_arr) + [agent_name] * len(agent_arr)
+        })
+        sns.boxplot(data=data, x="Policy", y="Return", ax=ax, palette=["orange", "blue"])
+        sns.stripplot(data=data, x="Policy", y="Return", ax=ax, color="black", alpha=0.4, size=4)
+        ax.set_title("Episode Return Box Plot")
+        ax.grid(True, alpha=0.3, axis="y")
+
+        # 3. Cumulative Distribution
+        ax = axes[1, 0]
+        baseline_sorted = np.sort(baseline_arr)
+        agent_sorted = np.sort(agent_arr)
+        baseline_cdf = np.arange(1, len(baseline_sorted) + 1) / len(baseline_sorted)
+        agent_cdf = np.arange(1, len(agent_sorted) + 1) / len(agent_sorted)
+        ax.plot(baseline_sorted, baseline_cdf, label="Baseline", color="orange", linewidth=2)
+        ax.plot(agent_sorted, agent_cdf, label=agent_name, color="blue", linewidth=2)
+        ax.set_xlabel("Episode Return")
+        ax.set_ylabel("Cumulative Probability")
+        ax.set_title("Cumulative Distribution Function (CDF)")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+
+        # 4. Statistical Summary
+        ax = axes[1, 1]
+        ax.axis("off")
+
+        # Compute statistics
+        baseline_mean = baseline_arr.mean()
+        baseline_std = baseline_arr.std()
+        agent_mean = agent_arr.mean()
+        agent_std = agent_arr.std()
+        improvement = agent_mean - baseline_mean
+        improvement_pct = (improvement / abs(baseline_mean)) * 100 if baseline_mean != 0 else 0
+
+        # Win rate (how often agent beats baseline mean)
+        win_rate = (agent_arr > baseline_mean).mean() * 100
+
+        # Effect size (Cohen's d)
+        pooled_std = np.sqrt((baseline_std ** 2 + agent_std ** 2) / 2)
+        cohens_d = improvement / pooled_std if pooled_std > 0 else 0
+
+        stats_text = f"""
+╔══════════════════════════════════════════════════════╗
+║           STATISTICAL COMPARISON                      ║
+╠══════════════════════════════════════════════════════╣
+║                                                       ║
+║  BASELINE POLICY                                      ║
+║  ─────────────────                                    ║
+║    Episodes:     {len(baseline_arr):>6}                              ║
+║    Mean Return:  {baseline_mean:>10.2f}                          ║
+║    Std Dev:      {baseline_std:>10.2f}                          ║
+║    Min:          {baseline_arr.min():>10.2f}                          ║
+║    Max:          {baseline_arr.max():>10.2f}                          ║
+║                                                       ║
+║  {agent_name.upper():^19}                                      ║
+║  ─────────────────                                    ║
+║    Episodes:     {len(agent_arr):>6}                              ║
+║    Mean Return:  {agent_mean:>10.2f}                          ║
+║    Std Dev:      {agent_std:>10.2f}                          ║
+║    Min:          {agent_arr.min():>10.2f}                          ║
+║    Max:          {agent_arr.max():>10.2f}                          ║
+║                                                       ║
+║  COMPARISON                                           ║
+║  ─────────────────                                    ║
+║    Improvement:  {improvement:>+10.2f}  ({improvement_pct:>+6.1f}%)            ║
+║    Win Rate:     {win_rate:>10.1f}%                          ║
+║    Effect Size:  {cohens_d:>10.3f}  (Cohen's d)             ║
+║                                                       ║
+╚══════════════════════════════════════════════════════╝
+"""
+        ax.text(0.05, 0.95, stats_text, transform=ax.transAxes,
+                fontsize=10, verticalalignment="top", fontfamily="monospace",
+                bbox=dict(boxstyle="round", facecolor="lightgray", alpha=0.8))
+        ax.set_title("Statistical Summary", fontsize=12, fontweight="bold")
+
+        fig.suptitle(f"Episode Return Distribution: {agent_name} vs Baseline", fontsize=14, fontweight="bold")
+        fig.tight_layout(rect=[0, 0, 1, 0.97])
+        fig.savefig(output_dir / "episode_return_distribution.png", bbox_inches="tight", dpi=150)
+        plt.close(fig)

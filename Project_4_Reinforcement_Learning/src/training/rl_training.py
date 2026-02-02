@@ -492,7 +492,7 @@ def default_hyperparameter_grid() -> Dict[str, Sequence[Any]]:
 
 
 def default_ppo_hyperparameters() -> Dict[str, Any]:
-    """Provide a curated PPO hyperparameter set optimized for single-day (24-step) episodes.
+    """Provide a curated PPO hyperparameter set optimized for 5-day (120-step) episodes.
 
     Returns
     -------
@@ -501,29 +501,29 @@ def default_ppo_hyperparameters() -> Dict[str, Any]:
 
     Notes
     -----
-    Optimizations for single-day (24-step) episodes:
-    - learning_rate: 5e-4 - slightly higher for faster convergence on short episodes
-    - gamma: 0.95 - appropriate discount for 24-step episodes (0.95^24 ≈ 0.29)
-    - gae_lambda: 0.92 - balanced for short-horizon advantage estimation
-    - ent_coef: 0.05 - higher entropy for better exploration in large action space
-    - n_steps: 480 - multiple complete episodes (480 = 24 * 20 episodes per batch)
+    Optimizations for 5-day (120-step) episodes:
+    - learning_rate: 3e-4 - stable learning rate for medium-length episodes
+    - gamma: 0.99 - high discount for 120-step episodes (0.99^120 ≈ 0.30)
+    - gae_lambda: 0.95 - standard GAE for stable advantage estimation
+    - ent_coef: 0.05 - moderate entropy for exploration in large action space
+    - n_steps: 2400 - 20 complete 120-step episodes per update
     - batch_size: 64 - smaller batches for more frequent updates
-    - n_epochs: 15 - more epochs to extract learning from each batch
-    - Larger networks with layer normalization for stability
+    - n_epochs: 10 - standard epochs per update
+    - Network architecture handles the environment complexity
     """
 
     return {
-        "learning_rate": 5e-4,  # Higher for faster convergence on short episodes
-        "gamma": 0.95,  # Appropriate for 24-step episodes (end reward = 29% of immediate)
-        "gae_lambda": 0.92,  # Tuned for short-horizon advantage estimation
-        "ent_coef": 0.05,  # Higher entropy for large action space exploration
+        "learning_rate": 3e-4,  # Stable learning rate
+        "gamma": 0.99,  # High discount for 120-step episodes (end reward ≈ 30%)
+        "gae_lambda": 0.95,  # Standard GAE for stable advantage estimation
+        "ent_coef": 0.05,  # Moderate entropy for exploration
         "clip_range": 0.2,  # Standard PPO clipping
-        "n_steps": 480,  # 20 complete 24-step episodes per update
+        "n_steps": 2400,  # 20 complete 120-step episodes per update
         "batch_size": 64,  # Smaller batches for more gradient updates
         "vf_coef": 0.5,  # Standard value function coefficient
         "max_grad_norm": 0.5,  # Standard gradient clipping
         "normalize_advantage": True,  # Normalize advantages for stability
-        "n_epochs": 15,  # More epochs to extract learning from each batch
+        "n_epochs": 10,  # Standard epochs per update
         # Network architecture optimized for the environment complexity
         "policy_kwargs": {
             "net_arch": {
@@ -531,6 +531,26 @@ def default_ppo_hyperparameters() -> Dict[str, Any]:
                 "vf": [256, 256, 128],  # Value network: matches policy depth
             },
         },
+    }
+
+
+def focused_hyperparameter_grid() -> Dict[str, Sequence[Any]]:
+    """Provide a focused hyperparameter grid for searching optimal settings.
+
+    This grid focuses on the most impactful hyperparameters:
+    - learning_rate: Controls convergence speed and stability
+    - gamma: Discount factor - crucial for multi-day episodes
+    - ent_coef: Exploration vs exploitation trade-off
+
+    Returns
+    -------
+    dict
+        Grid of hyperparameter values to search.
+    """
+    return {
+        "learning_rate": [1e-4, 3e-4, 5e-4, 1e-3],
+        "gamma": [0.95, 0.98, 0.99, 0.995],
+        "ent_coef": [0.01, 0.03, 0.05, 0.1],
     }
 
 
@@ -1685,6 +1705,31 @@ def run_training(
         baseline_strategy,
         output_dir=run_metadata.root_dir / "plots",
     )
+
+    # Plot multi-day agent and baseline behavior visualization
+    if not agent_step_frame.empty:
+        plotter.plot_multiday_agent_behavior(
+            agent_step_frame[agent_step_frame["episode"] == 1],
+            output_dir=run_metadata.root_dir / "plots",
+            policy_name="PPO Agent",
+        )
+    if not baseline_step_frame.empty:
+        plotter.plot_multiday_agent_behavior(
+            baseline_step_frame[baseline_step_frame["episode"] == 1],
+            output_dir=run_metadata.root_dir / "plots",
+            policy_name="Baseline",
+        )
+
+    # Plot episode return distribution comparison
+    agent_rewards = agent_summary_frame["total_reward"].tolist() if not agent_summary_frame.empty else []
+    baseline_rewards = baseline_summary_frame["total_reward"].tolist() if not baseline_summary_frame.empty else []
+    if agent_rewards and baseline_rewards:
+        plotter.plot_episode_return_distribution(
+            agent_rewards,
+            baseline_rewards,
+            output_dir=run_metadata.root_dir / "plots",
+            agent_name="PPO Agent",
+        )
 
     logger.info("Best generation: %s", best_generation)
     logger.info("Best mean reward: %.3f", best_score)
