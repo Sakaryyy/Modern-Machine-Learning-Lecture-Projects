@@ -20,7 +20,8 @@ from Project_4_Reinforcement_Learning.src.training import (
     HyperparameterSearchConfig,
     long_horizon_ppo_hyperparameters,
     run_training_sweep,
-    run_training
+    run_training,
+    focused_hyperparameter_grid,
 )
 from Project_4_Reinforcement_Learning.src.utils import (
     EpisodeRecorder,
@@ -324,7 +325,10 @@ def main() -> None:
             tensorboard_log=args.tensorboard_log,
         )
         if args.hyperparameter_search_enabled:
-            search_config = HyperparameterSearchConfig(grid={}, max_configs=args.max_configs)
+            search_config = HyperparameterSearchConfig(
+                grid=focused_hyperparameter_grid(),
+                max_configs=args.max_configs
+            )
             run_training_sweep(
                 output_dir=args.output_dir,
                 run_name=args.run_name,
